@@ -252,7 +252,13 @@ app.post('/mcp', authenticate, (req, res) => {
     })
   }
 
-  // Pass through to Garmin process
+  // Notifications have no id — forward and return 202 immediately
+  if (msg.id === undefined || msg.id === null) {
+    garminProcess.stdin.write(JSON.stringify(msg) + '\n')
+    return res.status(202).end()
+  }
+
+  // Regular request — forward and wait for response
   sendToGarmin(msg, res)
 })
 
