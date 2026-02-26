@@ -1,40 +1,54 @@
-# Garmin MCP — Docker Deployment
+# Garmin MCP Server
 
-Hosts the Garmin MCP server with OAuth 2.0 security, ready to connect to claude.ai.
+Hosts the [Garmin MCP](https://github.com/Taxuspt/garmin_mcp) as a remote MCP server with OAuth 2.0 authentication, compatible with claude.ai and Claude mobile.
+
+Built by Weiran Xiong with AI support.
 
 ## Architecture
 
 ```
-claude.ai → nginx (443) → oauth-proxy (8101) → supergateway (8100) → garmin_mcp
+claude.ai → nginx (443/SSL) → server.js (8101) → garmin_mcp (stdio)
 ```
 
-- **supergateway** wraps the Garmin MCP stdio server as Streamable HTTP
-- **oauth-proxy** adds OAuth 2.0 client credentials auth in front
-- **nginx** handles SSL termination
+- **server.js** — Express app that manages the Garmin MCP stdio process directly, handles OAuth 2.0 (authorization code + PKCE, client credentials), and proxies MCP requests
+- **nginx** — SSL termination, reverse proxy
+- **garmin_mcp** — spawned as a child process, communicates over stdin/stdout
+
+## OAuth Flow
+
+claude.ai uses the full OAuth 2.0 authorization code flow with PKCE:
+
+1. claude.ai redirects to `/authorize` — a consent page appears in your browser
+2. You click Approve
+3. claude.ai exchanges the code for a bearer token at `/oauth/token`
+4. All `/mcp` requests are authenticated with the bearer token
 
 ## Port Allocation
 
 | Port | Service |
 |------|---------|
-| 8101 | oauth-proxy + supergateway (internal) |
+| 8101 | server.js (internal) |
 | 443  | nginx (public HTTPS) |
+
+Port 80 is intentionally left free.
 
 ## Prerequisites
 
-- Docker + Docker Compose installed on your VPS
-- nginx + certbot installed
+- VPS running Ubuntu 24.04
+- Docker + Docker Compose
+- nginx + certbot
 - Domain pointing to your VPS IP
 
-## Deployment
+## Setup
 
-### 1. Clone this repo on your VPS
+### 1. Clone the repo
 
 ```bash
-git clone <your-repo> garmin-mcp
+git clone https://github.com/weiranx/garmin-mcp.git
 cd garmin-mcp
 ```
 
-### 2. Set up environment variables
+### 2. Configure environment
 
 ```bash
 cp .env.example .env
@@ -43,43 +57,54 @@ nano .env
 
 Generate strong secrets:
 ```bash
-openssl rand -hex 32  # run twice, use for CLIENT_ID and CLIENT_SECRET
+openssl rand -hex 32  # use for CLIENT_ID
+openssl rand -hex 32  # use for CLIENT_SECRET
 ```
 
-### 3. Build the Docker image
+`.env` values:
+```
+CLIENT_ID=your-generated-id
+CLIENT_SECRET=your-generated-secret
+BASE_URL=https://garmin.yourdomain.com
+```
+
+### 3. Build Docker image
 
 ```bash
 docker compose build
 ```
 
-### 4. Authenticate with Garmin (one-time setup)
+### 4. Authenticate with Garmin (one-time)
 
 ```bash
 chmod +x auth.sh
 ./auth.sh
 ```
 
-This opens an interactive prompt for your Garmin email, password, and MFA code.
-Tokens are stored in a Docker volume and persist across container restarts.
+Enter your Garmin email, password, and MFA code when prompted. Tokens are saved to a Docker volume and persist across restarts.
 
 ### 5. Start the service
 
 ```bash
 docker compose up -d
-```
-
-Check it's running:
-```bash
-docker compose ps
 docker compose logs -f
 ```
 
-Test the health endpoint:
-```bash
-curl http://localhost:8101/health
+Wait for:
+```
+[garmin] Starting Garmin MCP process...
+[server] Listening on port 8101
 ```
 
-### 6. Set up SSL certificate
+Test it:
+```bash
+curl http://localhost:8101/health
+# {"status":"ok","garminReady":true}
+```
+
+`garminReady` must be `true` before proceeding.
+
+### 6. SSL certificate
 
 ```bash
 sudo systemctl stop nginx
@@ -87,13 +112,13 @@ sudo certbot certonly --standalone -d garmin.yourdomain.com
 sudo systemctl start nginx
 ```
 
-Set up auto-renewal hooks:
+Set up auto-renewal hooks so certbot doesn't conflict with nginx:
 ```bash
 sudo nano /etc/letsencrypt/renewal-hooks/pre/stop-nginx.sh
-# Add: systemctl stop nginx
+# add: systemctl stop nginx
 
-sudo nano /etc/letsencrypt/renewal-hooks/post/start-nginx.sh  
-# Add: systemctl start nginx
+sudo nano /etc/letsencrypt/renewal-hooks/post/start-nginx.sh
+# add: systemctl start nginx
 
 sudo chmod +x /etc/letsencrypt/renewal-hooks/pre/stop-nginx.sh
 sudo chmod +x /etc/letsencrypt/renewal-hooks/post/start-nginx.sh
@@ -105,9 +130,7 @@ sudo certbot renew --dry-run
 
 ```bash
 sudo cp nginx-garmin.conf /etc/nginx/sites-available/garmin-mcp
-# Edit the file and replace yourdomain.com with your actual domain
-sudo nano /etc/nginx/sites-available/garmin-mcp
-
+sudo nano /etc/nginx/sites-available/garmin-mcp  # update domain name
 sudo ln -s /etc/nginx/sites-available/garmin-mcp /etc/nginx/sites-enabled/
 sudo nginx -t
 sudo systemctl reload nginx
@@ -117,10 +140,14 @@ sudo systemctl reload nginx
 
 Settings → Integrations → Add custom connector:
 
-- **Name:** Garmin
-- **Remote MCP server URL:** `https://garmin.yourdomain.com/mcp`
-- **OAuth Client ID:** your CLIENT_ID from .env
-- **OAuth Client Secret:** your CLIENT_SECRET from .env
+| Field | Value |
+|---|---|
+| Name | Garmin |
+| Remote MCP server URL | `https://garmin.yourdomain.com/mcp` |
+| OAuth Client ID | your CLIENT_ID |
+| OAuth Client Secret | your CLIENT_SECRET |
+
+When connecting, a browser window will open asking you to approve access. Click Approve.
 
 ## Maintenance
 
@@ -137,7 +164,7 @@ docker compose restart
 docker compose logs -f
 ```
 
-### Update to latest garmin_mcp
+### Update garmin_mcp to latest
 
 ```bash
 docker compose build --no-cache
@@ -147,6 +174,21 @@ docker compose up -d
 ### Stop / restart
 
 ```bash
-docker compose stop
-docker compose restart
+docker compose down
+docker compose up -d
 ```
+
+## Files
+
+| File | Purpose |
+|---|---|
+| `server.js` | Main server — OAuth + MCP proxy + Garmin process manager |
+| `Dockerfile` | Container definition |
+| `docker-compose.yml` | Service configuration |
+| `nginx-garmin.conf` | nginx config template |
+| `auth.sh` | One-time Garmin authentication script |
+| `.env.example` | Environment variable template |
+
+## Disclaimer
+
+This project uses the unofficial [garmin_mcp](https://github.com/Taxuspt/garmin_mcp) library which reverse-engineers the Garmin Connect API. It is not affiliated with or endorsed by Garmin. Use at your own risk.
