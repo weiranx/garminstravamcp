@@ -18,8 +18,8 @@ if [ -f .env ]; then
   export $(grep -v '^#' .env | grep -E '^STRAVA_' | xargs)
 fi
 
-if [ -z "$STRAVA_CLIENT_ID" ] || [ -z "$STRAVA_CLIENT_SECRET" ]; then
-  echo "ERROR: STRAVA_CLIENT_ID and STRAVA_CLIENT_SECRET must be set in .env"
+if [ -z "$STRAVA_API_CLIENT_ID" ] || [ -z "$STRAVA_API_CLIENT_SECRET" ]; then
+  echo "ERROR: STRAVA_API_CLIENT_ID and STRAVA_API_CLIENT_SECRET must be set in .env"
   echo "Get them from: https://www.strava.com/settings/api"
   exit 1
 fi
@@ -31,8 +31,8 @@ echo ""
 docker compose run --rm \
   -p 8080:8080 \
   --entrypoint "" \
-  -e STRAVA_CLIENT_ID="${STRAVA_CLIENT_ID}" \
-  -e STRAVA_CLIENT_SECRET="${STRAVA_CLIENT_SECRET}" \
+  -e STRAVA_CLIENT_ID="${STRAVA_API_CLIENT_ID}" \
+  -e STRAVA_CLIENT_SECRET="${STRAVA_API_CLIENT_SECRET}" \
   strava-mcp \
   node /app/strava-auth-helper.js
 
