@@ -19,5 +19,32 @@ services:
       retries: 3
       start_period: 10s
 
+  strava-mcp:
+    build:
+      context: .
+      dockerfile: Dockerfile.strava
+    container_name: strava-mcp
+    restart: unless-stopped
+    ports:
+      - "8102:8102"
+    environment:
+      - CLIENT_ID=${STRAVA_MCP_CLIENT_ID}
+      - CLIENT_SECRET=${STRAVA_MCP_CLIENT_SECRET}
+      - BASE_URL=${STRAVA_BASE_URL}
+      - STRAVA_CLIENT_ID=${STRAVA_API_CLIENT_ID}
+      - STRAVA_CLIENT_SECRET=${STRAVA_API_CLIENT_SECRET}
+      - STRAVA_ACCESS_TOKEN=${STRAVA_ACCESS_TOKEN}
+      - STRAVA_REFRESH_TOKEN=${STRAVA_REFRESH_TOKEN}
+    volumes:
+      # Persist Strava OAuth tokens across container restarts
+      - strava-tokens:/root/.config/strava-mcp
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8102/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 15s
+
 volumes:
   garmin-tokens:
+  strava-tokens:
