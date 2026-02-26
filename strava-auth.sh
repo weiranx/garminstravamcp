@@ -29,7 +29,6 @@ echo "(A browser URL will be printed — open it to authorize)"
 echo ""
 
 docker compose run --rm \
-  -p 8080:8080 \
   --entrypoint "" \
   -e STRAVA_CLIENT_ID="${STRAVA_API_CLIENT_ID}" \
   -e STRAVA_CLIENT_SECRET="${STRAVA_API_CLIENT_SECRET}" \

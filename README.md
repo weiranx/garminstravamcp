@@ -92,14 +92,16 @@ Enter your Garmin email, password, and MFA code when prompted. Tokens are saved 
 
 ### 5. Authenticate with Strava (one-time)
 
-Create a Strava API app at https://www.strava.com/settings/api, then:
+Create a Strava API app at https://www.strava.com/settings/api. In the app settings, set **Authorization Callback Domain** to `localhost`.
+
+Then run:
 
 ```bash
 chmod +x strava-auth.sh
 ./strava-auth.sh
 ```
 
-Follow the printed URL to authorize in your browser. Tokens are saved to a Docker volume and refreshed automatically.
+The script prints a Strava authorization URL. Open it in your browser, click Authorize, then copy the full URL from the browser's address bar (it will show "This site can't be reached" — that's expected) and paste it back into the terminal. Tokens are saved to a Docker volume and refreshed automatically.
 
 ### 6. Start the services
 

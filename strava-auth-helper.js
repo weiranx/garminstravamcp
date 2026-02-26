@@ -1,13 +1,12 @@
 #!/usr/bin/env node
 // One-time Strava OAuth setup — run via strava-auth.sh
-const http = require('http')
+const readline = require('readline')
 const fs = require('fs')
 const path = require('path')
 
 const CLIENT_ID = process.env.STRAVA_CLIENT_ID
 const CLIENT_SECRET = process.env.STRAVA_CLIENT_SECRET
 const TOKEN_FILE = '/root/.config/strava-mcp/config.json'
-const CALLBACK_PORT = 8080
 
 if (!CLIENT_ID || !CLIENT_SECRET) {
   console.error('ERROR: STRAVA_CLIENT_ID and STRAVA_CLIENT_SECRET must be set')
@@ -17,44 +16,44 @@ if (!CLIENT_ID || !CLIENT_SECRET) {
 const authUrl = [
   'https://www.strava.com/oauth/authorize',
   `?client_id=${CLIENT_ID}`,
-  `&redirect_uri=http://localhost:${CALLBACK_PORT}/callback`,
+  '&redirect_uri=http://localhost/exchange_token',
   '&response_type=code',
   '&scope=read_all,activity:read_all,profile:read_all',
   '&approval_prompt=force'
 ].join('')
 
 console.log('\n=== Strava MCP Authentication ===\n')
-console.log('Open this URL in your browser:\n')
+console.log('1. Open this URL in your browser:\n')
 console.log(authUrl)
-console.log('\nAfter authorizing, Strava will redirect to localhost.')
-console.log('Waiting for callback...\n')
+console.log('\n2. Click "Authorize" on the Strava page.')
+console.log('3. Your browser will redirect to localhost and show "This site can\'t be reached" — that\'s expected.')
+console.log('4. Copy the full URL from your browser\'s address bar and paste it below.\n')
 
-const server = http.createServer(async (req, res) => {
-  const url = new URL(req.url, `http://localhost:${CALLBACK_PORT}`)
+const rl = readline.createInterface({ input: process.stdin, output: process.stdout })
 
-  if (url.pathname !== '/callback') {
-    res.writeHead(404)
-    res.end('Not found')
-    return
-  }
+rl.question('Paste the redirect URL here: ', async (input) => {
+  rl.close()
 
-  const code = url.searchParams.get('code')
-  const error = url.searchParams.get('error')
-
-  if (error) {
-    res.writeHead(200, { 'Content-Type': 'text/html' })
-    res.end(`<html><body><h2>Authorization denied: ${error}</h2><p>You can close this window.</p></body></html>`)
-    server.close()
-    process.exit(1)
+  let code
+  try {
+    const url = new URL(input.trim())
+    code = url.searchParams.get('code')
+    const error = url.searchParams.get('error')
+    if (error) {
+      console.error(`\nAuthorization denied: ${error}`)
+      process.exit(1)
+    }
+  } catch {
+    // Maybe they pasted just the code directly
+    code = input.trim()
   }
 
   if (!code) {
-    res.writeHead(400, { 'Content-Type': 'text/html' })
-    res.end('<html><body><h2>No authorization code received</h2></body></html>')
-    return
+    console.error('\nNo authorization code found. Make sure to paste the full redirect URL.')
+    process.exit(1)
   }
 
-  console.log('Received authorization code, exchanging for tokens...')
+  console.log('\nExchanging code for tokens...')
 
   try {
     const tokenRes = await fetch('https://www.strava.com/oauth/token', {
@@ -71,9 +70,6 @@ const server = http.createServer(async (req, res) => {
 
     if (!tokenData.access_token) {
       console.error('Token exchange failed:', JSON.stringify(tokenData, null, 2))
-      res.writeHead(500, { 'Content-Type': 'text/html' })
-      res.end(`<html><body><h2>Token exchange failed</h2><pre>${JSON.stringify(tokenData, null, 2)}</pre></body></html>`)
-      server.close()
       process.exit(1)
     }
 
@@ -95,20 +91,9 @@ const server = http.createServer(async (req, res) => {
     console.log(`STRAVA_ACCESS_TOKEN=${tokenData.access_token}`)
     console.log(`STRAVA_REFRESH_TOKEN=${tokenData.refresh_token}`)
     console.log('\nThen start the service: docker compose up -d strava-mcp\n')
-
-    res.writeHead(200, { 'Content-Type': 'text/html' })
-    res.end('<html><body><h2>Authentication successful!</h2><p>You can close this window and return to your terminal.</p></body></html>')
-
-    setTimeout(() => { server.close(); process.exit(0) }, 1000)
+    process.exit(0)
   } catch (e) {
     console.error('Error during token exchange:', e.message)
-    res.writeHead(500)
-    res.end('Error: ' + e.message)
-    server.close()
     process.exit(1)
   }
-})
-
-server.listen(CALLBACK_PORT, () => {
-  console.log(`Callback server listening on port ${CALLBACK_PORT}`)
 })
