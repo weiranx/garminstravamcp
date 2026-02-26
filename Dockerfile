@@ -1,6 +1,6 @@
 FROM node:20-slim
 
-# Install Python and uv dependencies
+# Install Python, uv, and git
 RUN apt-get update && apt-get install -y \
     curl \
     python3 \
@@ -12,8 +12,8 @@ RUN apt-get update && apt-get install -y \
 RUN curl -LsSf https://astral.sh/uv/install.sh | sh
 ENV PATH="/root/.local/bin:$PATH"
 
-# Pre-install supergateway
-RUN npm install -g supergateway
+# Install mcp-proxy
+RUN npm install -g mcp-proxy
 
 # Pre-fetch garmin_mcp so it's cached in the image
 RUN uvx --python 3.12 --from git+https://github.com/Taxuspt/garmin_mcp garmin-mcp --help || true
