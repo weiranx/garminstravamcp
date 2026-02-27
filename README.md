@@ -28,20 +28,75 @@ claude.ai → nginx (strava.yourdomain.com:443) → strava-server.js (8102) → 
 ## Prerequisites
 
 - VPS running Ubuntu 24.04
+- A domain name with DNS you can configure (e.g. Cloudflare, Namecheap, Route53)
 - Docker + Docker Compose
-- nginx + certbot (`sudo apt install nginx certbot`)
-- Two domains pointing to your VPS IP (e.g. `garmin.yourdomain.com`, `strava.yourdomain.com`)
+- nginx + certbot (`sudo apt install nginx certbot python3-certbot-nginx`)
 
 ## Setup
 
-### 1. Clone the repo
+### 1. Provision your VPS
+
+SSH into your VPS and install dependencies:
 
 ```bash
-git clone https://github.com/weiranx/garmin-mcp.git
-cd garmin-mcp
+# Update packages
+sudo apt update && sudo apt upgrade -y
+
+# Install Docker
+curl -fsSL https://get.docker.com | sh
+sudo usermod -aG docker $USER
+newgrp docker
+
+# Install nginx and certbot
+sudo apt install -y nginx certbot python3-certbot-nginx
+
+# Verify
+docker --version
+nginx -v
 ```
 
-### 2. Configure environment
+Open the firewall for HTTP and HTTPS (needed for Let's Encrypt and for claude.ai):
+
+```bash
+sudo ufw allow 80
+sudo ufw allow 443
+sudo ufw allow OpenSSH
+sudo ufw enable
+```
+
+### 2. Point your domains at the VPS
+
+You need two subdomains — one for Garmin, one for Strava. Create **A records** in your DNS provider's dashboard:
+
+| Type | Name | Value | TTL |
+|------|------|-------|-----|
+| A | `garmin` | `<your VPS IP>` | 300 |
+| A | `strava` | `<your VPS IP>` | 300 |
+
+This makes `garmin.yourdomain.com` and `strava.yourdomain.com` resolve to your VPS.
+
+**Find your VPS IP:**
+```bash
+curl ifconfig.me
+```
+
+**Verify DNS has propagated** before continuing (can take a few minutes):
+```bash
+dig garmin.yourdomain.com +short
+dig strava.yourdomain.com +short
+# Both should return your VPS IP
+```
+
+You can also check propagation from outside your network at https://dnschecker.org.
+
+### 3. Clone the repo
+
+```bash
+git clone https://github.com/weiranx/garminmcp.git
+cd garminmcp
+```
+
+### 4. Configure environment
 
 ```bash
 cp .env.example .env
@@ -75,13 +130,13 @@ STRAVA_ACCESS_TOKEN=    # filled in by strava-auth.sh
 STRAVA_REFRESH_TOKEN=   # filled in by strava-auth.sh
 ```
 
-### 3. Build Docker image
+### 5. Build Docker image
 
 ```bash
 docker compose build
 ```
 
-### 4. Authenticate with Garmin (one-time)
+### 6. Authenticate with Garmin (one-time)
 
 ```bash
 chmod +x auth.sh
@@ -90,7 +145,7 @@ chmod +x auth.sh
 
 Enter your Garmin email, password, and MFA code when prompted. Tokens are saved to a Docker volume and persist across restarts.
 
-### 5. Authenticate with Strava (one-time)
+### 7. Authenticate with Strava (one-time)
 
 Create a Strava API app at https://www.strava.com/settings/api. In the app settings, set **Authorization Callback Domain** to `localhost`.
 
@@ -101,9 +156,9 @@ chmod +x strava-auth.sh
 ./strava-auth.sh
 ```
 
-The script prints a Strava authorization URL. Open it in your browser, click Authorize, then copy the full URL from the browser's address bar (it will show "This site can't be reached" — that's expected) and paste it back into the terminal. Tokens are saved to a Docker volume and refreshed automatically.
+The script prints a Strava authorization URL. Open it in your browser, click Authorize, then copy the full URL from the browser's address bar (it will show "This site can't be reached" — that's expected) and paste it back into the terminal. Tokens are saved to a Docker volume and refreshed automatically every 5.5 hours.
 
-### 6. Start the services
+### 8. Start the services
 
 ```bash
 docker compose up -d
@@ -129,9 +184,9 @@ curl http://localhost:8102/health
 
 Both `garminReady` and `stravaReady` must be `true` before proceeding.
 
-### 7. SSL certificates
+### 9. SSL certificates
 
-Stop nginx, issue certificates for both domains, then restart:
+Issue certificates for both domains using certbot's standalone mode (temporarily stops nginx):
 
 ```bash
 sudo systemctl stop nginx
@@ -144,19 +199,16 @@ sudo systemctl start nginx
 
 Set up auto-renewal hooks so certbot doesn't conflict with nginx:
 ```bash
-sudo nano /etc/letsencrypt/renewal-hooks/pre/stop-nginx.sh
-# add: systemctl stop nginx
-
-sudo nano /etc/letsencrypt/renewal-hooks/post/start-nginx.sh
-# add: systemctl start nginx
-
+sudo bash -c 'echo "systemctl stop nginx" > /etc/letsencrypt/renewal-hooks/pre/stop-nginx.sh'
+sudo bash -c 'echo "systemctl start nginx" > /etc/letsencrypt/renewal-hooks/post/start-nginx.sh'
 sudo chmod +x /etc/letsencrypt/renewal-hooks/pre/stop-nginx.sh
 sudo chmod +x /etc/letsencrypt/renewal-hooks/post/start-nginx.sh
 
+# Test renewal
 sudo certbot renew --dry-run
 ```
 
-### 8. Configure nginx
+### 10. Configure nginx
 
 The `setup-nginx.sh` script reads your domain names directly from `.env` and installs both nginx configs:
 
@@ -167,9 +219,19 @@ chmod +x setup-nginx.sh
 
 This runs `envsubst` on both `nginx-garmin.conf` and `nginx-strava.conf`, copies them to `/etc/nginx/sites-available/`, enables them, and reloads nginx.
 
-### 9. Add to claude.ai
+Verify nginx is working:
+```bash
+sudo nginx -t
+curl https://garmin.yourdomain.com/health
+# {"status":"ok","garminReady":true}
 
-Settings → Integrations → Add custom connector — add one for each service:
+curl https://strava.yourdomain.com/health
+# {"status":"ok","stravaReady":true}
+```
+
+### 11. Add to claude.ai
+
+Go to **Settings → Integrations → Add custom connector** and add one entry for each service:
 
 **Garmin:**
 
@@ -189,11 +251,23 @@ Settings → Integrations → Add custom connector — add one for each service:
 | OAuth Client ID | your `STRAVA_MCP_CLIENT_ID` |
 | OAuth Client Secret | your `STRAVA_MCP_CLIENT_SECRET` |
 
-When connecting, a browser window will open asking you to approve access. Click Approve.
+When connecting, a browser window will open asking you to approve access. Click **Approve**.
+
+OAuth tokens issued to claude.ai never expire and are persisted to disk, so you will not need to reconnect after restarting the containers.
 
 ## Maintenance
 
-### Re-authenticate Garmin (when tokens expire)
+### Restart containers
+
+```bash
+docker compose restart
+
+# Or full stop/start:
+docker compose down
+docker compose up -d
+```
+
+### Re-authenticate Garmin (when Garmin session tokens expire)
 
 ```bash
 ./auth.sh
@@ -215,17 +289,30 @@ docker compose logs -f garmin-mcp
 docker compose logs -f strava-mcp
 ```
 
+### Check persisted OAuth tokens
+
+```bash
+# Garmin
+docker exec garmin-mcp cat /root/.garminconnect/oauth-tokens.json
+
+# Strava
+docker exec strava-mcp cat /root/.config/strava-mcp/oauth-tokens.json
+```
+
+You should see a JSON array of token strings. If the file is missing, reconnect the MCP in claude.ai to issue a new token.
+
+Verify tokens are loaded on startup:
+```bash
+docker logs garmin-mcp 2>&1 | grep "persisted token"
+docker logs strava-mcp 2>&1 | grep "persisted token"
+# Loaded N persisted token(s)
+```
+
 ### Update to latest
 
 ```bash
+git pull
 docker compose build --no-cache
-docker compose up -d
-```
-
-### Stop / restart
-
-```bash
-docker compose down
 docker compose up -d
 ```
 
