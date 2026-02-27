@@ -197,9 +197,30 @@ setInterval(async () => {
   await refreshStravaToken(tokens)
 }, 5.5 * 60 * 60 * 1000)
 
-// ── In-memory OAuth stores ────────────────────────────────────────────────────
+// ── OAuth token store (persisted to disk) ─────────────────────────────────────
+// Stored in the same volume as the Strava API tokens so no extra volume is needed.
+const OAUTH_TOKENS_FILE = '/root/.config/strava-mcp/oauth-tokens.json'
+
 const authCodes = new Map()
 const tokens = new Map()
+
+function loadTokens() {
+  try {
+    const data = JSON.parse(fs.readFileSync(OAUTH_TOKENS_FILE, 'utf8'))
+    for (const t of data) tokens.set(t, Infinity)
+    console.log(`[server] Loaded ${data.length} persisted token(s)`)
+  } catch { /* file missing or unreadable — start fresh */ }
+}
+
+function saveTokens() {
+  try {
+    fs.writeFileSync(OAUTH_TOKENS_FILE, JSON.stringify([...tokens.keys()]))
+  } catch (e) {
+    console.error('[server] Failed to persist tokens:', e.message)
+  }
+}
+
+loadTokens()
 
 const base64url = (buf) => buf.toString('base64').replace(/\+/g, '-').replace(/\//g, '_').replace(/=/g, '')
 
@@ -275,8 +296,9 @@ app.post('/oauth/token', (req, res) => {
     if (client_id !== CLIENT_ID || client_secret !== CLIENT_SECRET)
       return res.status(401).json({ error: 'invalid_client' })
     const token = base64url(crypto.randomBytes(32))
-    tokens.set(token, Date.now() + 3600000)
-    return res.json({ access_token: token, token_type: 'bearer', expires_in: 3600 })
+    tokens.set(token, Infinity)
+    saveTokens()
+    return res.json({ access_token: token, token_type: 'bearer' })
   }
 
   if (grant_type === 'authorization_code') {
@@ -288,9 +310,9 @@ app.post('/oauth/token', (req, res) => {
       return res.status(400).json({ error: 'invalid_grant', error_description: 'PKCE failed' })
     authCodes.delete(code)
     const token = base64url(crypto.randomBytes(32))
-    tokens.set(token, Date.now() + 3600000)
-    for (const [t, exp] of tokens.entries()) if (Date.now() > exp) tokens.delete(t)
-    return res.json({ access_token: token, token_type: 'bearer', expires_in: 3600 })
+    tokens.set(token, Infinity)
+    saveTokens()
+    return res.json({ access_token: token, token_type: 'bearer' })
   }
 
   res.status(400).json({ error: 'unsupported_grant_type' })
