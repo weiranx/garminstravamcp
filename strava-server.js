@@ -9,14 +9,6 @@ const app = express()
 app.use(express.urlencoded({ extended: true }))
 app.use(express.json())
 
-// Log all requests to help diagnose connection issues
-app.use((req, res, next) => {
-  const auth = req.headers.authorization
-  const tokenHint = auth ? auth.slice(0, 20) + '...' : 'none'
-  console.log(`[http] ${req.method} ${req.path} auth=${tokenHint}`)
-  next()
-})
-
 const CLIENT_ID = process.env.CLIENT_ID
 const CLIENT_SECRET = process.env.CLIENT_SECRET
 const BASE_URL = process.env.BASE_URL
