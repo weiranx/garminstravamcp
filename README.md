@@ -165,6 +165,8 @@ docker compose up -d
 docker compose logs -f
 ```
 
+This starts three containers: `garmin-mcp`, `strava-mcp`, and `autoheal`. The `autoheal` container watches the other two and restarts any that become `unhealthy` (i.e. fail their healthcheck). It checks every 10 seconds after a 30-second startup grace period.
+
 Wait for both services to be ready:
 ```
 [garmin] Starting Garmin MCP process...
@@ -266,6 +268,15 @@ docker compose restart
 docker compose down
 docker compose up -d
 ```
+
+### Restart behavior summary
+
+| Failure | What happens |
+|---|---|
+| Child process (`garmin_mcp` / `strava-mcp`) crashes | Node restarts it automatically after 3 s |
+| Node (`server.js`) crashes / exits | Docker restarts the container (`restart: unless-stopped`) |
+| Healthcheck fails 3× (Node hung) | `autoheal` restarts the container within ~30 s |
+| VPS reboots | Docker starts containers on boot automatically |
 
 ### Re-authenticate Garmin (when Garmin session tokens expire)
 

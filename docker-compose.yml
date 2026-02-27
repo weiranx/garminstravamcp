@@ -1,8 +1,21 @@
 services:
+  autoheal:
+    image: willfarrell/autoheal:latest
+    container_name: autoheal
+    restart: unless-stopped
+    environment:
+      - AUTOHEAL_CONTAINER_LABEL=autoheal
+      - AUTOHEAL_INTERVAL=10
+      - AUTOHEAL_START_PERIOD=30
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock
+
   garmin-mcp:
     build: .
     container_name: garmin-mcp
     restart: unless-stopped
+    labels:
+      - autoheal=true
     ports:
       - "8101:8101"
     environment:
@@ -24,6 +37,8 @@ services:
     command: ["node", "strava-server.js"]
     container_name: strava-mcp
     restart: unless-stopped
+    labels:
+      - autoheal=true
     ports:
       - "8102:8102"
     environment:
