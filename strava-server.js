@@ -314,6 +314,21 @@ app.post('/mcp', authenticate, (req, res) => {
   const msg = req.body
   console.log('[mcp] Received:', JSON.stringify(msg).slice(0, 200))
 
+  // Handle initialize directly so Claude.ai gets a valid 200 even if the
+  // subprocess is still starting up. Without this, 503 causes Claude.ai to
+  // show "McpEndpointNotFound" and permanently revert the connection.
+  if (msg.method === 'initialize') {
+    return res.json({
+      jsonrpc: '2.0',
+      id: msg.id,
+      result: {
+        protocolVersion: msg.params?.protocolVersion || '2024-11-05',
+        capabilities: { tools: {} },
+        serverInfo: { name: 'strava-mcp', version: '1.0.0' }
+      }
+    })
+  }
+
   if (!initialized) {
     return res.status(503).json({
       jsonrpc: '2.0',
