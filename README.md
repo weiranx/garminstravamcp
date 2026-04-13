@@ -2,8 +2,6 @@
 
 Hosts [Garmin MCP](https://github.com/Taxuspt/garmin_mcp) and [Strava MCP](https://github.com/r-huijts/strava-mcp) as remote MCP servers with OAuth 2.0 authentication, compatible with claude.ai and Claude mobile.
 
-Built by Weiran Xiong with AI support.
-
 ## Architecture
 
 ```
