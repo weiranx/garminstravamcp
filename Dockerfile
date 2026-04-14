@@ -17,9 +17,12 @@ RUN uvx --python 3.12 --from git+https://github.com/Taxuspt/garmin_mcp garmin-mc
 # Pre-cache Strava MCP
 RUN npx --yes @r-huijts/strava-mcp-server --help 2>/dev/null || true
 
+# Pre-cache COROS MCP
+RUN uvx --python 3.12 --from git+https://github.com/cygnusb/coros-mcp coros-mcp --help 2>/dev/null || true
+
 WORKDIR /app
 
-COPY server.js strava-server.js strava-auth-helper.js package.json ./
+COPY server.js strava-server.js coros-server.js strava-auth-helper.js package.json ./
 RUN npm install
 
 VOLUME ["/root/.garminconnect"]

@@ -59,6 +59,33 @@ services:
       retries: 3
       start_period: 15s
 
+  coros-mcp:
+    build: .
+    command: ["node", "coros-server.js"]
+    container_name: coros-mcp
+    restart: unless-stopped
+    labels:
+      - autoheal=true
+    ports:
+      - "8103:8103"
+    environment:
+      - CLIENT_ID=${COROS_MCP_CLIENT_ID}
+      - CLIENT_SECRET=${COROS_MCP_CLIENT_SECRET}
+      - BASE_URL=${COROS_BASE_URL}
+      - COROS_EMAIL=${COROS_EMAIL}
+      - COROS_PASSWORD=${COROS_PASSWORD}
+      - COROS_REGION=${COROS_REGION}
+    volumes:
+      # Persist COROS auth and OAuth tokens across container restarts
+      - coros-tokens:/root/.config/coros-mcp
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8103/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 15s
+
 volumes:
   garmin-tokens:
   strava-tokens:
+  coros-tokens:
