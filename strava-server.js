@@ -241,6 +241,14 @@ app.get('/.well-known/oauth-authorization-server', (req, res) => {
   })
 })
 
+app.get('/.well-known/oauth-protected-resource', (req, res) => {
+  res.json({
+    resource: BASE_URL,
+    authorization_servers: [BASE_URL],
+    bearer_methods_supported: ['header']
+  })
+})
+
 // ── Authorize GET ─────────────────────────────────────────────────────────────
 app.get('/authorize', (req, res) => {
   const { response_type, client_id, redirect_uri, code_challenge, code_challenge_method, state } = req.query

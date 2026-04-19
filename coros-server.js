@@ -118,7 +118,7 @@ function sendToCoros(msg, res, isInternal = false) {
       timer: setTimeout(() => {
         console.error('[coros] Init timeout')
         pendingRequests.delete(msg.id)
-      }, 15000)
+      }, 120000)
     })
     return
   }
@@ -178,7 +178,16 @@ app.get('/.well-known/oauth-authorization-server', (req, res) => {
     token_endpoint: `${BASE_URL}/oauth/token`,
     response_types_supported: ['code'],
     grant_types_supported: ['authorization_code', 'client_credentials'],
+    token_endpoint_auth_methods_supported: ['client_secret_post', 'none'],
     code_challenge_methods_supported: ['S256']
+  })
+})
+
+app.get('/.well-known/oauth-protected-resource', (req, res) => {
+  res.json({
+    resource: `${BASE_URL}/`,
+    authorization_servers: [BASE_URL],
+    bearer_methods_supported: ['header']
   })
 })
 
