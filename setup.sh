@@ -52,28 +52,23 @@ echo ""
 echo "=== Step 3: Configuration ==="
 echo ""
 
-if [ -f .env ]; then
-  if confirm ".env already exists. Use existing configuration?"; then
-    source .env
+touch .env
+source .env
+
+# Returns true if key has a non-empty value in .env
+has_key() { grep -E "^$1=.+" .env > /dev/null 2>&1; }
+
+append_env() { printf '%s\n' "$1" >> .env; }
+
+if [ "$ENABLE_GARMIN" = true ]; then
+  if has_key CLIENT_ID && has_key BASE_URL; then
+    echo "  Garmin: using existing config"
   else
-    mv .env ".env.bak.$(date +%s)"
-    echo "  Old .env backed up."
-  fi
-fi
-
-if [ ! -f .env ]; then
-  echo "  Secrets (CLIENT_ID, CLIENT_SECRET) will be generated automatically."
-  echo "  Provide your domain names and API credentials below."
-  echo ""
-
-  ENV_CONTENT=""
-
-  if [ "$ENABLE_GARMIN" = true ]; then
     echo "  -- Garmin --"
     ask "Domain (e.g. garmin.yourdomain.com)" GARMIN_HOST
     GARMIN_CLIENT_ID=$(gen)
     GARMIN_CLIENT_SECRET=$(gen)
-    ENV_CONTENT="${ENV_CONTENT}
+    append_env "
 # ── Garmin MCP ────────────────────────────────────────────────────────────────
 CLIENT_ID=${GARMIN_CLIENT_ID}
 CLIENT_SECRET=${GARMIN_CLIENT_SECRET}
@@ -81,8 +76,12 @@ BASE_URL=https://${GARMIN_HOST}
 "
     echo ""
   fi
+fi
 
-  if [ "$ENABLE_STRAVA" = true ]; then
+if [ "$ENABLE_STRAVA" = true ]; then
+  if has_key STRAVA_MCP_CLIENT_ID && has_key STRAVA_BASE_URL && has_key STRAVA_API_CLIENT_ID; then
+    echo "  Strava: using existing config"
+  else
     echo "  -- Strava --"
     echo "  Get your API credentials at https://www.strava.com/settings/api"
     ask "Domain (e.g. strava.yourdomain.com)" STRAVA_HOST
@@ -90,7 +89,7 @@ BASE_URL=https://${GARMIN_HOST}
     ask_password "Strava API client secret" STRAVA_API_CLIENT_SECRET
     STRAVA_MCP_CLIENT_ID=$(gen)
     STRAVA_MCP_CLIENT_SECRET=$(gen)
-    ENV_CONTENT="${ENV_CONTENT}
+    append_env "
 # ── Strava MCP ────────────────────────────────────────────────────────────────
 STRAVA_MCP_CLIENT_ID=${STRAVA_MCP_CLIENT_ID}
 STRAVA_MCP_CLIENT_SECRET=${STRAVA_MCP_CLIENT_SECRET}
@@ -102,8 +101,12 @@ STRAVA_REFRESH_TOKEN=
 "
     echo ""
   fi
+fi
 
-  if [ "$ENABLE_COROS" = true ]; then
+if [ "$ENABLE_COROS" = true ]; then
+  if has_key COROS_MCP_CLIENT_ID && has_key COROS_BASE_URL && has_key COROS_EMAIL; then
+    echo "  COROS: using existing config"
+  else
     echo "  -- COROS --"
     ask "Domain (e.g. coros.yourdomain.com)" COROS_HOST
     ask "COROS account email" COROS_EMAIL
@@ -112,7 +115,7 @@ STRAVA_REFRESH_TOKEN=
     COROS_REGION="${COROS_REGION:-eu}"
     COROS_MCP_CLIENT_ID=$(gen)
     COROS_MCP_CLIENT_SECRET=$(gen)
-    ENV_CONTENT="${ENV_CONTENT}
+    append_env "
 # ── COROS MCP ─────────────────────────────────────────────────────────────────
 COROS_MCP_CLIENT_ID=${COROS_MCP_CLIENT_ID}
 COROS_MCP_CLIENT_SECRET=${COROS_MCP_CLIENT_SECRET}
@@ -123,11 +126,9 @@ COROS_REGION=${COROS_REGION}
 "
     echo ""
   fi
-
-  printf '%s\n' "${ENV_CONTENT}" > .env
-  echo "  .env written."
-  source .env
 fi
+
+source .env
 
 # ── Step 4: DNS reminder ──────────────────────────────────────────────────────
 
