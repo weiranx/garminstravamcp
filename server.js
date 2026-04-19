@@ -23,6 +23,8 @@ let garminProcess = null
 let pendingRequests = new Map() // id -> { res, timer }
 let messageBuffer = ''
 let initialized = false
+let restartDelayMs = 3000
+const MAX_RESTART_DELAY_MS = 300000
 
 function startGarmin() {
   console.log('[garmin] Starting Garmin MCP process...')
@@ -59,10 +61,12 @@ function startGarmin() {
   })
 
   garminProcess.on('exit', (code) => {
-    console.error(`[garmin] Process exited with code ${code}, restarting in 3s...`)
+    const delay = restartDelayMs
+    console.error(`[garmin] Process exited with code ${code}, restarting in ${delay / 1000}s...`)
     initialized = false
     garminProcess = null
-    setTimeout(startGarmin, 3000)
+    restartDelayMs = Math.min(restartDelayMs * 2, MAX_RESTART_DELAY_MS)
+    setTimeout(startGarmin, delay)
   })
 
   // Send initialize
@@ -98,6 +102,7 @@ function sendToGarmin(msg, res, isInternal = false) {
         json: (data) => {
           console.log('[garmin] Initialized:', JSON.stringify(data).slice(0, 200))
           initialized = true
+          restartDelayMs = 3000
           // Send initialized notification
           garminProcess.stdin.write(JSON.stringify({
             jsonrpc: '2.0',

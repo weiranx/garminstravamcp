@@ -31,6 +31,8 @@ if (!COROS_EMAIL || !COROS_PASSWORD) {
 let corosProcess = null
 let pendingRequests = new Map() // id -> { res, timer }
 let initialized = false
+let restartDelayMs = 3000
+const MAX_RESTART_DELAY_MS = 300000
 
 function startCoros() {
   console.log('[coros] Starting COROS MCP process...')
@@ -72,10 +74,12 @@ function startCoros() {
   })
 
   corosProcess.on('exit', (code) => {
-    console.error(`[coros] Process exited with code ${code}, restarting in 3s...`)
+    const delay = restartDelayMs
+    console.error(`[coros] Process exited with code ${code}, restarting in ${delay / 1000}s...`)
     initialized = false
     corosProcess = null
-    setTimeout(startCoros, 3000)
+    restartDelayMs = Math.min(restartDelayMs * 2, MAX_RESTART_DELAY_MS)
+    setTimeout(startCoros, delay)
   })
 
   setTimeout(() => {
@@ -108,6 +112,7 @@ function sendToCoros(msg, res, isInternal = false) {
         json: (data) => {
           console.log('[coros] Initialized:', JSON.stringify(data).slice(0, 200))
           initialized = true
+          restartDelayMs = 3000
           corosProcess.stdin.write(JSON.stringify({
             jsonrpc: '2.0',
             method: 'notifications/initialized',

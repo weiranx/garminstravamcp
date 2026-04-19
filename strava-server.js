@@ -84,6 +84,8 @@ async function refreshStravaToken(tokens) {
 let stravaProcess = null
 let pendingRequests = new Map() // id -> { res, timer }
 let initialized = false
+let restartDelayMs = 3000
+const MAX_RESTART_DELAY_MS = 300000
 
 async function startStrava() {
   console.log('[strava] Starting Strava MCP process...')
@@ -126,10 +128,12 @@ async function startStrava() {
   })
 
   stravaProcess.on('exit', (code) => {
-    console.error(`[strava] Process exited with code ${code}, restarting in 3s...`)
+    const delay = restartDelayMs
+    console.error(`[strava] Process exited with code ${code}, restarting in ${delay / 1000}s...`)
     initialized = false
     stravaProcess = null
-    setTimeout(startStrava, 3000)
+    restartDelayMs = Math.min(restartDelayMs * 2, MAX_RESTART_DELAY_MS)
+    setTimeout(startStrava, delay)
   })
 
   setTimeout(() => {
@@ -162,6 +166,7 @@ function sendToStrava(msg, res, isInternal = false) {
         json: (data) => {
           console.log('[strava] Initialized:', JSON.stringify(data).slice(0, 200))
           initialized = true
+          restartDelayMs = 3000
           stravaProcess.stdin.write(JSON.stringify({
             jsonrpc: '2.0',
             method: 'notifications/initialized',
