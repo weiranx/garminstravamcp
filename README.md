@@ -1,19 +1,22 @@
-# Garmin + Strava MCP Server
+# Garmin + Strava + COROS MCP Server
 
-Hosts [Garmin MCP](https://github.com/Taxuspt/garmin_mcp) and [Strava MCP](https://github.com/r-huijts/strava-mcp) as remote MCP servers with OAuth 2.0 authentication, compatible with claude.ai and Claude mobile.
+Hosts [Garmin MCP](https://github.com/Taxuspt/garmin_mcp), [Strava MCP](https://github.com/r-huijts/strava-mcp), and [COROS MCP](https://github.com/wrnrlr/coros-mcp) as remote MCP servers with OAuth 2.0 authentication, compatible with claude.ai and Claude mobile.
 
 ## Architecture
 
 ```
-claude.ai → nginx (garmin.yourdomain.com:443) → server.js (8101) → garmin_mcp (stdio)
+claude.ai → nginx (garmin.yourdomain.com:443) → server.js (8101)        → garmin_mcp (stdio)
 claude.ai → nginx (strava.yourdomain.com:443) → strava-server.js (8102) → strava-mcp (stdio)
+claude.ai → nginx (coros.yourdomain.com:443)  → coros-server.js (8103)  → coros-mcp  (stdio)
 ```
 
 - **server.js** — OAuth 2.0 proxy for Garmin MCP (authorization code + PKCE, client credentials)
 - **strava-server.js** — OAuth 2.0 proxy for Strava MCP, includes automatic token refresh
-- **nginx** — SSL termination and reverse proxy for both services
+- **coros-server.js** — OAuth 2.0 proxy for COROS MCP
+- **nginx** — SSL termination and reverse proxy for all services
 - **garmin_mcp** — spawned as a child process via `uvx`
 - **strava-mcp** — spawned as a child process via `npx`, tokens refreshed every 6 hours
+- **coros-mcp** — spawned as a child process via `uvx`; authenticates with the COROS API automatically on first use and re-authenticates when the token expires
 
 ## Port Allocation
 
@@ -21,6 +24,7 @@ claude.ai → nginx (strava.yourdomain.com:443) → strava-server.js (8102) → 
 |------|---------|
 | 8101 | server.js — Garmin (internal) |
 | 8102 | strava-server.js — Strava (internal) |
+| 8103 | coros-server.js — COROS (internal) |
 | 443  | nginx (public HTTPS) |
 
 ## Prerequisites
@@ -64,14 +68,15 @@ sudo ufw enable
 
 ### 2. Point your domains at the VPS
 
-You need two subdomains — one for Garmin, one for Strava. Create **A records** in your DNS provider's dashboard:
+You need one subdomain per service you plan to enable. Create **A records** in your DNS provider's dashboard:
 
 | Type | Name | Value | TTL |
 |------|------|-------|-----|
 | A | `garmin` | `<your VPS IP>` | 300 |
 | A | `strava` | `<your VPS IP>` | 300 |
+| A | `coros`  | `<your VPS IP>` | 300 |
 
-This makes `garmin.yourdomain.com` and `strava.yourdomain.com` resolve to your VPS.
+This makes `garmin.yourdomain.com`, `strava.yourdomain.com`, and `coros.yourdomain.com` resolve to your VPS.
 
 **Find your VPS IP:**
 ```bash
@@ -82,7 +87,8 @@ curl ifconfig.me
 ```bash
 dig garmin.yourdomain.com +short
 dig strava.yourdomain.com +short
-# Both should return your VPS IP
+dig coros.yourdomain.com +short
+# All should return your VPS IP
 ```
 
 You can also check propagation from outside your network at https://dnschecker.org.
@@ -101,12 +107,11 @@ cp .env.example .env
 nano .env
 ```
 
-Generate strong secrets:
+Generate strong secrets (one pair per service you're enabling):
 ```bash
-openssl rand -hex 32  # use for CLIENT_ID
-openssl rand -hex 32  # use for CLIENT_SECRET
-openssl rand -hex 32  # use for STRAVA_MCP_CLIENT_ID
-openssl rand -hex 32  # use for STRAVA_MCP_CLIENT_SECRET
+openssl rand -hex 32  # use for CLIENT_ID / CLIENT_SECRET (Garmin)
+openssl rand -hex 32  # use for STRAVA_MCP_CLIENT_ID / STRAVA_MCP_CLIENT_SECRET
+openssl rand -hex 32  # use for COROS_MCP_CLIENT_ID / COROS_MCP_CLIENT_SECRET
 ```
 
 `.env` values:
@@ -126,7 +131,19 @@ STRAVA_API_CLIENT_ID=your-strava-app-client-id
 STRAVA_API_CLIENT_SECRET=your-strava-app-client-secret
 STRAVA_ACCESS_TOKEN=    # filled in by strava-auth.sh
 STRAVA_REFRESH_TOKEN=   # filled in by strava-auth.sh
+
+# COROS MCP OAuth layer
+COROS_MCP_CLIENT_ID=your-generated-id
+COROS_MCP_CLIENT_SECRET=your-generated-secret
+COROS_BASE_URL=https://coros.yourdomain.com
+
+# COROS account credentials
+COROS_EMAIL=you@example.com
+COROS_PASSWORD=your-coros-password
+COROS_REGION=eu    # eu, us, or asia
 ```
+
+Alternatively, run `./setup.sh` — it walks through dependency install, env generation, DNS reminder, build, auth, SSL, and nginx in one flow, and can be re-run later to add an additional service without disturbing the ones already configured.
 
 ### 5. Build Docker image
 
@@ -156,6 +173,10 @@ chmod +x strava-auth.sh
 
 The script prints a Strava authorization URL. Open it in your browser, click Authorize, then copy the full URL from the browser's address bar (it will show "This site can't be reached" — that's expected) and paste it back into the terminal. Tokens are saved to a Docker volume and refreshed automatically every 5.5 hours.
 
+### 7b. COROS (no manual auth needed)
+
+COROS authenticates automatically on first use using `COROS_EMAIL` / `COROS_PASSWORD` / `COROS_REGION` from `.env`. The `coros-mcp` library re-authenticates when the token expires — no separate auth script to run.
+
 ### 8. Start the services
 
 ```bash
@@ -163,14 +184,16 @@ docker compose up -d
 docker compose logs -f
 ```
 
-This starts three containers: `garmin-mcp`, `strava-mcp`, and `autoheal`. The `autoheal` container watches the other two and restarts any that become `unhealthy` (i.e. fail their healthcheck). It checks every 10 seconds after a 30-second startup grace period.
+This starts up to four containers: `garmin-mcp`, `strava-mcp`, `coros-mcp`, and `autoheal`. The `autoheal` container watches the MCP services and restarts any that become `unhealthy` (i.e. fail their healthcheck). It checks every 10 seconds after a 30-second startup grace period.
 
-Wait for both services to be ready:
+Wait for services to be ready:
 ```
 [garmin] Starting Garmin MCP process...
 [server] Listening on port 8101
 [strava] Starting Strava MCP process...
 [strava-server] Listening on port 8102
+[coros] Starting COROS MCP process...
+[coros-server] Listening on port 8103
 ```
 
 Test them:
@@ -180,9 +203,12 @@ curl http://localhost:8101/health
 
 curl http://localhost:8102/health
 # {"status":"ok","stravaReady":true}
+
+curl http://localhost:8103/health
+# {"status":"ok","corosReady":true}
 ```
 
-Both `garminReady` and `stravaReady` must be `true` before proceeding.
+The `*Ready` flag for each enabled service must be `true` before proceeding.
 
 ### 9. SSL certificates
 
@@ -193,6 +219,7 @@ sudo systemctl stop nginx
 
 sudo certbot certonly --standalone -d garmin.yourdomain.com
 sudo certbot certonly --standalone -d strava.yourdomain.com
+sudo certbot certonly --standalone -d coros.yourdomain.com
 
 sudo systemctl start nginx
 ```
@@ -210,14 +237,14 @@ sudo certbot renew --dry-run
 
 ### 10. Configure nginx
 
-The `setup-nginx.sh` script reads your domain names directly from `.env` and installs both nginx configs:
+The `setup-nginx.sh` script reads your domain names directly from `.env` and installs the nginx configs:
 
 ```bash
 chmod +x setup-nginx.sh
 ./setup-nginx.sh
 ```
 
-This runs `envsubst` on both `nginx-garmin.conf` and `nginx-strava.conf`, copies them to `/etc/nginx/sites-available/`, enables them, and reloads nginx.
+This runs `envsubst` on `nginx-garmin.conf`, `nginx-strava.conf`, and `nginx-coros.conf`, copies them to `/etc/nginx/sites-available/`, enables them, and reloads nginx.
 
 Verify nginx is working:
 ```bash
@@ -227,6 +254,9 @@ curl https://garmin.yourdomain.com/health
 
 curl https://strava.yourdomain.com/health
 # {"status":"ok","stravaReady":true}
+
+curl https://coros.yourdomain.com/health
+# {"status":"ok","corosReady":true}
 ```
 
 ### 11. Add to claude.ai
@@ -250,6 +280,15 @@ Go to **Settings → Integrations → Add custom connector** and add one entry f
 | Remote MCP server URL | `https://strava.yourdomain.com/mcp` |
 | OAuth Client ID | your `STRAVA_MCP_CLIENT_ID` |
 | OAuth Client Secret | your `STRAVA_MCP_CLIENT_SECRET` |
+
+**COROS:**
+
+| Field | Value |
+|---|---|
+| Name | COROS |
+| Remote MCP server URL | `https://coros.yourdomain.com/mcp` |
+| OAuth Client ID | your `COROS_MCP_CLIENT_ID` |
+| OAuth Client Secret | your `COROS_MCP_CLIENT_SECRET` |
 
 When connecting, a browser window will open asking you to approve access. Click **Approve**.
 
@@ -290,12 +329,23 @@ docker compose restart garmin-mcp
 docker compose restart strava-mcp
 ```
 
+### Re-authenticate COROS (if credentials change)
+
+Edit `COROS_EMAIL` / `COROS_PASSWORD` in `.env`, then:
+
+```bash
+docker compose restart coros-mcp
+```
+
+The COROS library will re-authenticate on next use.
+
 ### View logs
 
 ```bash
 docker compose logs -f
 docker compose logs -f garmin-mcp
 docker compose logs -f strava-mcp
+docker compose logs -f coros-mcp
 ```
 
 ### Check persisted OAuth tokens
@@ -306,6 +356,9 @@ docker exec garmin-mcp cat /root/.garminconnect/oauth-tokens.json
 
 # Strava
 docker exec strava-mcp cat /root/.config/strava-mcp/oauth-tokens.json
+
+# COROS
+docker exec coros-mcp cat /root/.config/coros-mcp/oauth-tokens.json
 ```
 
 You should see a JSON array of token strings. If the file is missing, reconnect the MCP in claude.ai to issue a new token.
@@ -314,6 +367,7 @@ Verify tokens are loaded on startup:
 ```bash
 docker logs garmin-mcp 2>&1 | grep "persisted token"
 docker logs strava-mcp 2>&1 | grep "persisted token"
+docker logs coros-mcp  2>&1 | grep "persisted token"
 # Loaded N persisted token(s)
 ```
 
@@ -331,11 +385,14 @@ docker compose up -d
 |---|---|
 | `server.js` | Garmin OAuth proxy + MCP process manager (port 8101) |
 | `strava-server.js` | Strava OAuth proxy + MCP process manager (port 8102) |
+| `coros-server.js` | COROS OAuth proxy + MCP process manager (port 8103) |
 | `strava-auth-helper.js` | One-time Strava token exchange helper |
-| `Dockerfile` | Single container image for both services |
-| `docker-compose.yml` | Two-service configuration |
+| `Dockerfile` | Single container image used by all services |
+| `docker-compose.yml` | Multi-service configuration |
 | `nginx-garmin.conf` | nginx template for Garmin (uses `${GARMIN_DOMAIN}`) |
 | `nginx-strava.conf` | nginx template for Strava (uses `${STRAVA_DOMAIN}`) |
+| `nginx-coros.conf`  | nginx template for COROS (uses `${COROS_DOMAIN}`) |
+| `setup.sh` | End-to-end installer; re-run to add a service without disturbing existing ones |
 | `setup-nginx.sh` | Generates nginx configs from `.env` and reloads nginx |
 | `auth.sh` | One-time Garmin authentication script |
 | `strava-auth.sh` | One-time Strava authentication script |
@@ -343,4 +400,4 @@ docker compose up -d
 
 ## Disclaimer
 
-This project uses the unofficial [garmin_mcp](https://github.com/Taxuspt/garmin_mcp) library which reverse-engineers the Garmin Connect API. It is not affiliated with or endorsed by Garmin. Use at your own risk.
+This project uses the unofficial [garmin_mcp](https://github.com/Taxuspt/garmin_mcp) and [coros-mcp](https://github.com/wrnrlr/coros-mcp) libraries, which reverse-engineer the Garmin Connect and COROS APIs respectively. It is not affiliated with or endorsed by Garmin, Strava, or COROS. Use at your own risk.
