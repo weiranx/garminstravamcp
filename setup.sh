@@ -32,17 +32,43 @@ fi
 echo ""
 echo "=== Step 2: Service selection ==="
 echo ""
-echo "Which MCP services would you like to enable?"
+
+touch .env
+source .env
+
+# Returns true if key has a non-empty value in .env
+has_key() { grep -E "^$1=.+" .env > /dev/null 2>&1; }
+append_env() { printf '%s\n' "$1" >> .env; }
+
+# Detect what's already configured. Already-configured services are left alone;
+# new services go through the full setup pipeline (build, auth, SSL, nginx).
+HAVE_GARMIN=false; HAVE_STRAVA=false; HAVE_COROS=false
+has_key CLIENT_ID            && has_key BASE_URL            && HAVE_GARMIN=true
+has_key STRAVA_MCP_CLIENT_ID && has_key STRAVA_BASE_URL     && HAVE_STRAVA=true
+has_key COROS_MCP_CLIENT_ID  && has_key COROS_BASE_URL      && HAVE_COROS=true
+
+echo "  Already configured:"
+[ "$HAVE_GARMIN" = true ] && echo "    - Garmin"
+[ "$HAVE_STRAVA" = true ] && echo "    - Strava"
+[ "$HAVE_COROS"  = true ] && echo "    - COROS"
+[ "$HAVE_GARMIN" = false ] && [ "$HAVE_STRAVA" = false ] && [ "$HAVE_COROS" = false ] && echo "    (none)"
+echo ""
+echo "  Which additional services would you like to add?"
 echo ""
 
-ENABLE_GARMIN=false; ENABLE_STRAVA=false; ENABLE_COROS=false
-confirm "Enable Garmin MCP  (port 8101)" && ENABLE_GARMIN=true
-confirm "Enable Strava MCP  (port 8102)" && ENABLE_STRAVA=true
-confirm "Enable COROS MCP   (port 8103)" && ENABLE_COROS=true
+NEW_GARMIN=false; NEW_STRAVA=false; NEW_COROS=false
+[ "$HAVE_GARMIN" = false ] && confirm "Add Garmin MCP  (port 8101)" && NEW_GARMIN=true
+[ "$HAVE_STRAVA" = false ] && confirm "Add Strava MCP  (port 8102)" && NEW_STRAVA=true
+[ "$HAVE_COROS"  = false ] && confirm "Add COROS MCP   (port 8103)" && NEW_COROS=true
 
-if [ "$ENABLE_GARMIN" = false ] && [ "$ENABLE_STRAVA" = false ] && [ "$ENABLE_COROS" = false ]; then
+# Enabled = configured (already) OR being added (new). Used for summary/DNS.
+ENABLE_GARMIN=$([ "$HAVE_GARMIN" = true ] || [ "$NEW_GARMIN" = true ] && echo true || echo false)
+ENABLE_STRAVA=$([ "$HAVE_STRAVA" = true ] || [ "$NEW_STRAVA" = true ] && echo true || echo false)
+ENABLE_COROS=$([ "$HAVE_COROS"  = true ] || [ "$NEW_COROS"  = true ] && echo true || echo false)
+
+if [ "$NEW_GARMIN" = false ] && [ "$NEW_STRAVA" = false ] && [ "$NEW_COROS" = false ]; then
   echo ""
-  echo "No services selected. Exiting."
+  echo "Nothing to add. Exiting."
   exit 0
 fi
 
@@ -52,44 +78,29 @@ echo ""
 echo "=== Step 3: Configuration ==="
 echo ""
 
-touch .env
-source .env
-
-# Returns true if key has a non-empty value in .env
-has_key() { grep -E "^$1=.+" .env > /dev/null 2>&1; }
-
-append_env() { printf '%s\n' "$1" >> .env; }
-
-if [ "$ENABLE_GARMIN" = true ]; then
-  if has_key CLIENT_ID && has_key BASE_URL; then
-    echo "  Garmin: using existing config"
-  else
-    echo "  -- Garmin --"
-    ask "Domain (e.g. garmin.yourdomain.com)" GARMIN_HOST
-    GARMIN_CLIENT_ID=$(gen)
-    GARMIN_CLIENT_SECRET=$(gen)
-    append_env "
+if [ "$NEW_GARMIN" = true ]; then
+  echo "  -- Garmin --"
+  ask "Domain (e.g. garmin.yourdomain.com)" GARMIN_HOST
+  GARMIN_CLIENT_ID=$(gen)
+  GARMIN_CLIENT_SECRET=$(gen)
+  append_env "
 # ── Garmin MCP ────────────────────────────────────────────────────────────────
 CLIENT_ID=${GARMIN_CLIENT_ID}
 CLIENT_SECRET=${GARMIN_CLIENT_SECRET}
 BASE_URL=https://${GARMIN_HOST}
 "
-    echo ""
-  fi
+  echo ""
 fi
 
-if [ "$ENABLE_STRAVA" = true ]; then
-  if has_key STRAVA_MCP_CLIENT_ID && has_key STRAVA_BASE_URL && has_key STRAVA_API_CLIENT_ID; then
-    echo "  Strava: using existing config"
-  else
-    echo "  -- Strava --"
-    echo "  Get your API credentials at https://www.strava.com/settings/api"
-    ask "Domain (e.g. strava.yourdomain.com)" STRAVA_HOST
-    ask "Strava API client ID" STRAVA_API_CLIENT_ID
-    ask_password "Strava API client secret" STRAVA_API_CLIENT_SECRET
-    STRAVA_MCP_CLIENT_ID=$(gen)
-    STRAVA_MCP_CLIENT_SECRET=$(gen)
-    append_env "
+if [ "$NEW_STRAVA" = true ]; then
+  echo "  -- Strava --"
+  echo "  Get your API credentials at https://www.strava.com/settings/api"
+  ask "Domain (e.g. strava.yourdomain.com)" STRAVA_HOST
+  ask "Strava API client ID" STRAVA_API_CLIENT_ID
+  ask_password "Strava API client secret" STRAVA_API_CLIENT_SECRET
+  STRAVA_MCP_CLIENT_ID=$(gen)
+  STRAVA_MCP_CLIENT_SECRET=$(gen)
+  append_env "
 # ── Strava MCP ────────────────────────────────────────────────────────────────
 STRAVA_MCP_CLIENT_ID=${STRAVA_MCP_CLIENT_ID}
 STRAVA_MCP_CLIENT_SECRET=${STRAVA_MCP_CLIENT_SECRET}
@@ -99,23 +110,19 @@ STRAVA_API_CLIENT_SECRET=${STRAVA_API_CLIENT_SECRET}
 STRAVA_ACCESS_TOKEN=
 STRAVA_REFRESH_TOKEN=
 "
-    echo ""
-  fi
+  echo ""
 fi
 
-if [ "$ENABLE_COROS" = true ]; then
-  if has_key COROS_MCP_CLIENT_ID && has_key COROS_BASE_URL && has_key COROS_EMAIL; then
-    echo "  COROS: using existing config"
-  else
-    echo "  -- COROS --"
-    ask "Domain (e.g. coros.yourdomain.com)" COROS_HOST
-    ask "COROS account email" COROS_EMAIL
-    ask_password "COROS account password" COROS_PASSWORD
-    ask "COROS region (eu / us / asia) [eu]" COROS_REGION
-    COROS_REGION="${COROS_REGION:-eu}"
-    COROS_MCP_CLIENT_ID=$(gen)
-    COROS_MCP_CLIENT_SECRET=$(gen)
-    append_env "
+if [ "$NEW_COROS" = true ]; then
+  echo "  -- COROS --"
+  ask "Domain (e.g. coros.yourdomain.com)" COROS_HOST
+  ask "COROS account email" COROS_EMAIL
+  ask_password "COROS account password" COROS_PASSWORD
+  ask "COROS region (eu / us / asia) [eu]" COROS_REGION
+  COROS_REGION="${COROS_REGION:-eu}"
+  COROS_MCP_CLIENT_ID=$(gen)
+  COROS_MCP_CLIENT_SECRET=$(gen)
+  append_env "
 # ── COROS MCP ─────────────────────────────────────────────────────────────────
 COROS_MCP_CLIENT_ID=${COROS_MCP_CLIENT_ID}
 COROS_MCP_CLIENT_SECRET=${COROS_MCP_CLIENT_SECRET}
@@ -124,8 +131,7 @@ COROS_EMAIL=${COROS_EMAIL}
 COROS_PASSWORD=${COROS_PASSWORD}
 COROS_REGION=${COROS_REGION}
 "
-    echo ""
-  fi
+  echo ""
 fi
 
 source .env
@@ -137,9 +143,9 @@ echo "=== Step 4: DNS ==="
 echo ""
 echo "  Make sure the following DNS A records point to this server's IP ($(curl -sf ifconfig.me 2>/dev/null || echo '<your IP>')):"
 echo ""
-[ "$ENABLE_GARMIN" = true ] && echo "    ${BASE_URL#https://}"
-[ "$ENABLE_STRAVA" = true ] && echo "    ${STRAVA_BASE_URL#https://}"
-[ "$ENABLE_COROS"  = true ] && echo "    ${COROS_BASE_URL#https://}"
+[ "$NEW_GARMIN" = true ] && echo "    ${BASE_URL#https://}"
+[ "$NEW_STRAVA" = true ] && echo "    ${STRAVA_BASE_URL#https://}"
+[ "$NEW_COROS"  = true ] && echo "    ${COROS_BASE_URL#https://}"
 echo ""
 confirm "DNS records are set and propagated — continue?" || { echo "  Re-run setup.sh once DNS is ready."; exit 0; }
 
@@ -148,7 +154,11 @@ confirm "DNS records are set and propagated — continue?" || { echo "  Re-run s
 echo ""
 echo "=== Step 5: Build ==="
 echo ""
-docker compose build
+BUILD_SERVICES=""
+[ "$NEW_GARMIN" = true ] && BUILD_SERVICES="$BUILD_SERVICES garmin-mcp"
+[ "$NEW_STRAVA" = true ] && BUILD_SERVICES="$BUILD_SERVICES strava-mcp"
+[ "$NEW_COROS"  = true ] && BUILD_SERVICES="$BUILD_SERVICES coros-mcp"
+docker compose build $BUILD_SERVICES
 
 # ── Step 6: One-time authentication ──────────────────────────────────────────
 
@@ -156,7 +166,7 @@ echo ""
 echo "=== Step 6: Authentication ==="
 echo ""
 
-if [ "$ENABLE_GARMIN" = true ]; then
+if [ "$NEW_GARMIN" = true ]; then
   echo "  Garmin requires interactive authentication."
   if confirm "Run Garmin auth now?"; then
     chmod +x auth.sh
@@ -167,12 +177,11 @@ if [ "$ENABLE_GARMIN" = true ]; then
   echo ""
 fi
 
-if [ "$ENABLE_STRAVA" = true ]; then
+if [ "$NEW_STRAVA" = true ]; then
   echo "  Strava requires a one-time OAuth flow in your browser."
   if confirm "Run Strava auth now?"; then
     chmod +x strava-auth.sh
     ./strava-auth.sh
-    # Reload .env so updated tokens are picked up
     source .env
   else
     echo "  Skipping. Run ./strava-auth.sh before starting Strava."
@@ -187,9 +196,9 @@ echo "=== Step 7: Start containers ==="
 echo ""
 
 SERVICES="autoheal"
-[ "$ENABLE_GARMIN" = true ] && SERVICES="$SERVICES garmin-mcp"
-[ "$ENABLE_STRAVA" = true ] && SERVICES="$SERVICES strava-mcp"
-[ "$ENABLE_COROS"  = true ] && SERVICES="$SERVICES coros-mcp"
+[ "$NEW_GARMIN" = true ] && SERVICES="$SERVICES garmin-mcp"
+[ "$NEW_STRAVA" = true ] && SERVICES="$SERVICES strava-mcp"
+[ "$NEW_COROS"  = true ] && SERVICES="$SERVICES coros-mcp"
 
 docker compose up -d $SERVICES
 
@@ -206,9 +215,9 @@ check_health() {
   fi
 }
 
-[ "$ENABLE_GARMIN" = true ] && check_health "Garmin" "http://localhost:8101/health" "garminReady"
-[ "$ENABLE_STRAVA" = true ] && check_health "Strava" "http://localhost:8102/health" "stravaReady"
-[ "$ENABLE_COROS"  = true ] && check_health "COROS"  "http://localhost:8103/health" "corosReady"
+[ "$NEW_GARMIN" = true ] && check_health "Garmin" "http://localhost:8101/health" "garminReady"
+[ "$NEW_STRAVA" = true ] && check_health "Strava" "http://localhost:8102/health" "stravaReady"
+[ "$NEW_COROS"  = true ] && check_health "COROS"  "http://localhost:8103/health" "corosReady"
 
 # ── Step 8: SSL certificates ──────────────────────────────────────────────────
 
@@ -219,9 +228,9 @@ echo ""
 if confirm "Issue SSL certificates with certbot now?"; then
   sudo systemctl stop nginx
 
-  [ "$ENABLE_GARMIN" = true ] && sudo certbot certonly --standalone -d "${BASE_URL#https://}"
-  [ "$ENABLE_STRAVA" = true ] && sudo certbot certonly --standalone -d "${STRAVA_BASE_URL#https://}"
-  [ "$ENABLE_COROS"  = true ] && sudo certbot certonly --standalone -d "${COROS_BASE_URL#https://}"
+  [ "$NEW_GARMIN" = true ] && sudo certbot certonly --standalone -d "${BASE_URL#https://}"
+  [ "$NEW_STRAVA" = true ] && sudo certbot certonly --standalone -d "${STRAVA_BASE_URL#https://}"
+  [ "$NEW_COROS"  = true ] && sudo certbot certonly --standalone -d "${COROS_BASE_URL#https://}"
 
   sudo systemctl start nginx
   echo ""
@@ -242,17 +251,17 @@ if confirm "Configure nginx now?"; then
   export STRAVA_DOMAIN="${STRAVA_BASE_URL#https://}"
   export COROS_DOMAIN="${COROS_BASE_URL#https://}"
 
-  if [ "$ENABLE_GARMIN" = true ]; then
+  if [ "$NEW_GARMIN" = true ]; then
     envsubst '${GARMIN_DOMAIN}' < nginx-garmin.conf | sudo tee /etc/nginx/sites-available/garmin-mcp > /dev/null
     sudo ln -sf /etc/nginx/sites-available/garmin-mcp /etc/nginx/sites-enabled/garmin-mcp
     echo "  Garmin: configured ($GARMIN_DOMAIN)"
   fi
-  if [ "$ENABLE_STRAVA" = true ]; then
+  if [ "$NEW_STRAVA" = true ]; then
     envsubst '${STRAVA_DOMAIN}' < nginx-strava.conf | sudo tee /etc/nginx/sites-available/strava-mcp > /dev/null
     sudo ln -sf /etc/nginx/sites-available/strava-mcp /etc/nginx/sites-enabled/strava-mcp
     echo "  Strava: configured ($STRAVA_DOMAIN)"
   fi
-  if [ "$ENABLE_COROS" = true ]; then
+  if [ "$NEW_COROS" = true ]; then
     envsubst '${COROS_DOMAIN}' < nginx-coros.conf | sudo tee /etc/nginx/sites-available/coros-mcp > /dev/null
     sudo ln -sf /etc/nginx/sites-available/coros-mcp /etc/nginx/sites-enabled/coros-mcp
     echo "  COROS:  configured ($COROS_DOMAIN)"
