@@ -14,17 +14,17 @@ claude.ai → nginx (coros.yourdomain.com:443)  → coros-server.js (8103)  → 
 - **strava-server.js** — OAuth 2.0 proxy for Strava MCP, includes automatic token refresh
 - **coros-server.js** — OAuth 2.0 proxy for COROS MCP
 - **nginx** — SSL termination and reverse proxy for all services
-- **garmin_mcp** — spawned as a child process via `uvx`
-- **strava-mcp** — spawned as a child process via `npx`, tokens refreshed every 6 hours
-- **coros-mcp** — spawned as a child process via `uvx`; authenticates with the COROS API automatically on first use and re-authenticates when the token expires
+- **garmin_mcp** — spawned as a child process from a pinned Python runtime baked into the image (`garmin-runtime.js` manages it)
+- **strava-mcp** — `@r-huijts/strava-mcp-server`, pinned in `strava-mcp-pkg/` and installed at build time; spawned as a child process, tokens refreshed every 6 hours
+- **coros-mcp** — pinned in `coros-requirements.txt` and installed at build time; spawned as a child process, authenticates with the COROS API automatically on first use and re-authenticates when the token expires
 
 ## Port Allocation
 
 | Port | Service |
 |------|---------|
-| 8101 | server.js — Garmin (internal) |
-| 8102 | strava-server.js — Strava (internal) |
-| 8103 | coros-server.js — COROS (internal) |
+| 8101 | server.js — Garmin (bound to 127.0.0.1) |
+| 8102 | strava-server.js — Strava (bound to 127.0.0.1) |
+| 8103 | coros-server.js — COROS (bound to 127.0.0.1) |
 | 443  | nginx (public HTTPS) |
 
 ## Prerequisites
@@ -150,6 +150,8 @@ Alternatively, run `./setup.sh` — it walks through dependency install, env gen
 ```bash
 docker compose build
 ```
+
+> **Garmin image on a fresh server:** `Dockerfile.garmin` is not reproducible yet. It builds on the previous Garmin image and a local `.garmin-runtime/` directory that only exist on the production server. On a new server, point `garmin-mcp` at the original `Dockerfile` in `docker-compose.yml` (`dockerfile: Dockerfile`) until that is fixed.
 
 ### 6. Authenticate with Garmin (one-time)
 
@@ -383,11 +385,15 @@ docker compose up -d
 
 | File | Purpose |
 |---|---|
-| `server.js` | Garmin OAuth proxy + MCP process manager (port 8101) |
+| `server.js` | Garmin OAuth proxy (port 8101) |
+| `garmin-runtime.js` | Garmin MCP child process manager (tested by `garmin-runtime.test.js`, run with `node --test`) |
 | `strava-server.js` | Strava OAuth proxy + MCP process manager (port 8102) |
 | `coros-server.js` | COROS OAuth proxy + MCP process manager (port 8103) |
 | `strava-auth-helper.js` | One-time Strava token exchange helper |
-| `Dockerfile` | Single container image used by all services |
+| `Dockerfile.garmin` | Garmin image: pinned runtime, production server only (see step 5) |
+| `Dockerfile.strava` | Strava image with `strava-mcp-pkg/` installed at build time |
+| `Dockerfile.coros` | COROS image with `coros-requirements.txt` installed at build time |
+| `Dockerfile` | Original single image that installs everything at runtime; fallback for a fresh Garmin build |
 | `docker-compose.yml` | Multi-service configuration |
 | `nginx-garmin.conf` | nginx template for Garmin (uses `${GARMIN_DOMAIN}`) |
 | `nginx-strava.conf` | nginx template for Strava (uses `${STRAVA_DOMAIN}`) |

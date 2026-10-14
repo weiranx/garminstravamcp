@@ -9,10 +9,12 @@ Hosts Garmin and Strava MCP servers as remote HTTP servers with OAuth 2.0 authen
 ## Architecture
 
 ```
-claude.ai → nginx (garmin.yourdomain.com:443) → server.js (8101) → garmin_mcp subprocess (uvx, stdio)
-claude.ai → nginx (strava.yourdomain.com:443) → strava-server.js (8102) → strava-mcp subprocess (npx, stdio)
-claude.ai → nginx (coros.yourdomain.com:443) → coros-server.js (8103) → coros-mcp subprocess (uvx, stdio)
+claude.ai → nginx (garmin.yourdomain.com:443) → server.js (8101) → garmin_mcp subprocess (pinned runtime, stdio)
+claude.ai → nginx (strava.yourdomain.com:443) → strava-server.js (8102) → strava-mcp subprocess (installed at build time, stdio)
+claude.ai → nginx (coros.yourdomain.com:443) → coros-server.js (8103) → coros-mcp subprocess (installed at build time, stdio)
 ```
+
+Each service has its own Dockerfile (`Dockerfile.garmin`, `Dockerfile.strava`, `Dockerfile.coros`), and the ports are bound to 127.0.0.1 so only nginx reaches them. `Dockerfile.garmin` only builds on the production server (see its header comment).
 
 **Three independent Node.js servers**, each following the same pattern:
 1. Spawns the upstream MCP tool as a child process communicating over stdio (line-delimited JSON-RPC)
