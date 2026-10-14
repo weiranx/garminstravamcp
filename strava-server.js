@@ -128,30 +128,97 @@ async function startStrava() {
     }
   })
 
-  stravaProcess.on('exit', (code) => {
+  // EPIPE if the child dies mid-write; without a handler it would crash the wrapper
+  stravaProcess.stdin.on('error', (e) => {
+    console.error('[strava] stdin error:', e.message)
+  })
+
+  stravaProcess.on('exit', (code, signal) => {
     const delay = restartDelayMs
-    console.error(`[strava] Process exited with code ${code}, restarting in ${delay / 1000}s...`)
+    console.error(`[strava] Process exited with code ${code}${signal ? ` (${signal})` : ''}, restarting in ${delay / 1000}s...`)
     initialized = false
     stravaProcess = null
     restartDelayMs = Math.min(restartDelayMs * 2, MAX_RESTART_DELAY_MS)
     setTimeout(startStrava, delay)
   })
 
-  setTimeout(() => {
-    sendToStrava({
-      jsonrpc: '2.0',
-      method: 'initialize',
-      params: {
-        protocolVersion: '2024-11-05',
-        capabilities: {},
-        clientInfo: { name: 'strava-mcp-server', version: '1.0' }
-      },
-      id: 'init'
-    }, null, true)
-  }, 2000)
+  initStrava(stravaProcess)
 }
 
-function sendToStrava(msg, res, isInternal = false) {
+// Internal MCP handshake with a freshly spawned child. It is sent right away:
+// the pipe buffers stdin until the child starts reading, so no fixed delay is
+// needed. A slow child only gets a warning and a late response still marks
+// the wrapper ready. A child that never answers is killed, and the exit
+// handler restarts it with backoff, so the wrapper cannot stay not-ready forever.
+const INIT_WARN_MS = 15000
+const INIT_GIVE_UP_MS = 180000
+let initCount = 0
+
+function initStrava(child) {
+  const msg = {
+    jsonrpc: '2.0',
+    method: 'initialize',
+    params: {
+      protocolVersion: '2024-11-05',
+      capabilities: {},
+      clientInfo: { name: 'strava-mcp-server', version: '1.0' }
+    },
+    id: `init-${++initCount}`
+  }
+  const startedAt = Date.now()
+  const elapsed = () => `${((Date.now() - startedAt) / 1000).toFixed(1)}s`
+
+  const warnTimer = setTimeout(() => {
+    console.error(`[strava] Init slow: no response after ${elapsed()}, still waiting`)
+  }, INIT_WARN_MS)
+
+  const giveUpTimer = setTimeout(() => {
+    pendingRequests.delete(msg.id)
+    console.error(`[strava] Init timeout after ${elapsed()}, killing child to restart it`)
+    killChild(child)
+  }, INIT_GIVE_UP_MS)
+
+  pendingRequests.set(msg.id, {
+    res: {
+      json: (data) => {
+        clearTimeout(warnTimer)
+        if (child !== stravaProcess) return
+        if (data.error) {
+          console.error(`[strava] Init failed after ${elapsed()}:`, JSON.stringify(data.error).slice(0, 200))
+          killChild(child)
+          return
+        }
+        console.log(`[strava] Initialized after ${elapsed()}:`, JSON.stringify(data).slice(0, 200))
+        initialized = true
+        restartDelayMs = 3000
+        child.stdin.write(JSON.stringify({
+          jsonrpc: '2.0',
+          method: 'notifications/initialized',
+          params: {}
+        }) + '\n')
+      }
+    },
+    timer: giveUpTimer
+  })
+
+  child.once('exit', () => {
+    clearTimeout(warnTimer)
+    clearTimeout(giveUpTimer)
+    pendingRequests.delete(msg.id)
+  })
+
+  console.log('[strava] -->', JSON.stringify(msg).slice(0, 200))
+  child.stdin.write(JSON.stringify(msg) + '\n')
+}
+
+function killChild(child) {
+  child.kill('SIGTERM')
+  setTimeout(() => {
+    if (child.exitCode === null && child.signalCode === null) child.kill('SIGKILL')
+  }, 5000)
+}
+
+function sendToStrava(msg, res) {
   if (!stravaProcess) {
     if (res) res.status(503).json({ error: 'Strava process not running' })
     return
@@ -160,28 +227,6 @@ function sendToStrava(msg, res, isInternal = false) {
   const line = JSON.stringify(msg) + '\n'
   console.log('[strava] -->', JSON.stringify(msg).slice(0, 200))
   stravaProcess.stdin.write(line)
-
-  if (isInternal) {
-    pendingRequests.set(msg.id, {
-      res: {
-        json: (data) => {
-          console.log('[strava] Initialized:', JSON.stringify(data).slice(0, 200))
-          initialized = true
-          restartDelayMs = 3000
-          stravaProcess.stdin.write(JSON.stringify({
-            jsonrpc: '2.0',
-            method: 'notifications/initialized',
-            params: {}
-          }) + '\n')
-        }
-      },
-      timer: setTimeout(() => {
-        console.error('[strava] Init timeout')
-        pendingRequests.delete(msg.id)
-      }, 15000)
-    })
-    return
-  }
 
   if (res) {
     const timer = setTimeout(() => {
