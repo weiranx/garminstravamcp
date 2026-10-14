@@ -1,0 +1,8 @@
+{
+  "name": "strava-mcp-pkg",
+  "private": true,
+  "description": "Pinned @r-huijts/strava-mcp-server, installed at image build time by Dockerfile.strava",
+  "dependencies": {
+    "@r-huijts/strava-mcp-server": "1.2.1"
+  }
+}

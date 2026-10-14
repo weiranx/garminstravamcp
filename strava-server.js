@@ -93,7 +93,8 @@ async function startStrava() {
   let tokens = loadStravaTokens()
   tokens = await refreshStravaToken(tokens)
 
-  stravaProcess = spawn('npx', ['-y', '@r-huijts/strava-mcp-server'], {
+  // Installed at image build time (Dockerfile.strava), on PATH via /opt/strava-mcp/node_modules/.bin
+  stravaProcess = spawn('strava-mcp-server', [], {
     env: {
       ...process.env,
       HOME: '/root',

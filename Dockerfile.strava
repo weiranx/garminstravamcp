@@ -1,0 +1,23 @@
+# strava-mcp: wrapper (strava-server.js) + @r-huijts/strava-mcp-server installed at
+# build time (pinned via strava-mcp-pkg/package-lock.json), so container start does
+# no network installs.
+FROM node:20-slim
+
+RUN apt-get update && apt-get install -y --no-install-recommends curl ca-certificates tini \
+    && rm -rf /var/lib/apt/lists/*
+
+WORKDIR /opt/strava-mcp
+COPY strava-mcp-pkg/package.json strava-mcp-pkg/package-lock.json ./
+RUN npm ci --omit=dev --no-audit --no-fund && npm cache clean --force
+ENV PATH="/opt/strava-mcp/node_modules/.bin:$PATH"
+
+WORKDIR /app
+COPY package.json package-lock.json ./
+RUN npm ci --omit=dev --no-audit --no-fund && npm cache clean --force
+COPY strava-server.js strava-auth-helper.js ./
+
+VOLUME ["/root/.config/strava-mcp"]
+EXPOSE 8102
+# tini as PID 1 forwards SIGTERM so `docker stop/restart` does not wait out the 10s grace period
+ENTRYPOINT ["/usr/bin/tini", "--"]
+CMD ["node", "strava-server.js"]

@@ -36,11 +36,8 @@ const MAX_RESTART_DELAY_MS = 300000
 
 function startCoros() {
   console.log('[coros] Starting COROS MCP process...')
-  corosProcess = spawn('uvx', [
-    '--python', '3.12',
-    '--from', 'git+https://github.com/cygnusb/coros-mcp',
-    'coros-mcp', 'serve'
-  ], {
+  // Installed at image build time (Dockerfile.coros), on PATH via /opt/coros-mcp/bin
+  corosProcess = spawn('coros-mcp', ['serve'], {
     env: {
       ...process.env,
       HOME: '/root',

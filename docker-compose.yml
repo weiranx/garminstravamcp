@@ -33,7 +33,9 @@ services:
       start_period: 10s
 
   strava-mcp:
-    build: .
+    build:
+      context: .
+      dockerfile: Dockerfile.strava
     command: ["node", "strava-server.js"]
     container_name: strava-mcp
     restart: unless-stopped
@@ -60,7 +62,9 @@ services:
       start_period: 15s
 
   coros-mcp:
-    build: .
+    build:
+      context: .
+      dockerfile: Dockerfile.coros
     command: ["node", "coros-server.js"]
     container_name: coros-mcp
     restart: unless-stopped
