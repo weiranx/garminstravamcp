@@ -226,7 +226,8 @@ app.get('/.well-known/oauth-authorization-server', (req, res) => {
     response_types_supported: ['code'],
     grant_types_supported: ['authorization_code', 'client_credentials'],
     token_endpoint_auth_methods_supported: ['client_secret_post', 'none'],
-    code_challenge_methods_supported: ['S256']
+    code_challenge_methods_supported: ['S256'],
+    authorization_response_iss_parameter_supported: true
   })
 })
 
@@ -281,6 +282,7 @@ app.post('/authorize', (req, res) => {
 
   const url = new URL(redirect_uri)
   url.searchParams.set('code', code)
+  url.searchParams.set('iss', BASE_URL)
   if (state) url.searchParams.set('state', state)
   res.redirect(url.toString())
 })
