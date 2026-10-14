@@ -24,7 +24,7 @@ services:
     labels:
       - autoheal=true
     ports:
-      - "8101:8101"
+      - "127.0.0.1:8101:8101"
     environment:
       - CLIENT_ID=${CLIENT_ID}
       - CLIENT_SECRET=${CLIENT_SECRET}
@@ -49,7 +49,7 @@ services:
     labels:
       - autoheal=true
     ports:
-      - "8102:8102"
+      - "127.0.0.1:8102:8102"
     environment:
       - CLIENT_ID=${STRAVA_MCP_CLIENT_ID}
       - CLIENT_SECRET=${STRAVA_MCP_CLIENT_SECRET}
@@ -78,7 +78,7 @@ services:
     labels:
       - autoheal=true
     ports:
-      - "8103:8103"
+      - "127.0.0.1:8103:8103"
     environment:
       - CLIENT_ID=${COROS_MCP_CLIENT_ID}
       - CLIENT_SECRET=${COROS_MCP_CLIENT_SECRET}
