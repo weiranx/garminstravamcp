@@ -1,8 +1,6 @@
 const express = require('express')
 const { createProxyMiddleware } = require('http-proxy-middleware')
 const crypto = require('crypto')
-const { spawn } = require('child_process')
-const readline = require('readline')
 const fs = require('fs')
 
 const app = express()
@@ -18,120 +16,9 @@ if (!CLIENT_ID || !CLIENT_SECRET || !BASE_URL) {
   process.exit(1)
 }
 
-// ── Garmin MCP process manager ────────────────────────────────────────────────
-let garminProcess = null
-let pendingRequests = new Map() // id -> { res, timer }
-let messageBuffer = ''
-let initialized = false
-let restartDelayMs = 3000
-const MAX_RESTART_DELAY_MS = 300000
-
-function startGarmin() {
-  console.log('[garmin] Starting Garmin MCP process...')
-  garminProcess = spawn('uvx', [
-    '--python', '3.12',
-    '--from', 'git+https://github.com/Taxuspt/garmin_mcp',
-    'garmin-mcp'
-  ], {
-    env: { ...process.env, HOME: '/root' },
-    stdio: ['pipe', 'pipe', 'pipe']
-  })
-
-  garminProcess.stderr.on('data', (data) => {
-    process.stderr.write(`[garmin stderr] ${data}`)
-  })
-
-  // Read line-delimited JSON from stdout
-  const rl = readline.createInterface({ input: garminProcess.stdout })
-  rl.on('line', (line) => {
-    if (!line.trim()) return
-    try {
-      const msg = JSON.parse(line)
-      console.log('[garmin] <--', JSON.stringify(msg).slice(0, 200))
-
-      if (msg.id !== undefined && pendingRequests.has(msg.id)) {
-        const { res, timer } = pendingRequests.get(msg.id)
-        pendingRequests.delete(msg.id)
-        clearTimeout(timer)
-        res.json(msg)
-      }
-    } catch (e) {
-      console.error('[garmin] Failed to parse:', line)
-    }
-  })
-
-  garminProcess.on('exit', (code) => {
-    const delay = restartDelayMs
-    console.error(`[garmin] Process exited with code ${code}, restarting in ${delay / 1000}s...`)
-    initialized = false
-    garminProcess = null
-    restartDelayMs = Math.min(restartDelayMs * 2, MAX_RESTART_DELAY_MS)
-    setTimeout(startGarmin, delay)
-  })
-
-  // Send initialize
-  setTimeout(() => {
-    sendToGarmin({
-      jsonrpc: '2.0',
-      method: 'initialize',
-      params: {
-        protocolVersion: '2024-11-05',
-        capabilities: {},
-        clientInfo: { name: 'garmin-mcp-server', version: '1.0' }
-      },
-      id: 'init'
-    }, null, true)
-  }, 2000)
-}
-
-function sendToGarmin(msg, res, isInternal = false) {
-  if (!garminProcess) {
-    if (res) res.status(503).json({ error: 'Garmin process not running' })
-    return
-  }
-
-  const line = JSON.stringify(msg) + '\n'
-  console.log('[garmin] -->', JSON.stringify(msg).slice(0, 200))
-  garminProcess.stdin.write(line)
-
-  if (isInternal) {
-    // For internal init message, just listen for response
-    const origHas = pendingRequests.has.bind(pendingRequests)
-    pendingRequests.set(msg.id, {
-      res: {
-        json: (data) => {
-          console.log('[garmin] Initialized:', JSON.stringify(data).slice(0, 200))
-          initialized = true
-          restartDelayMs = 3000
-          // Send initialized notification
-          garminProcess.stdin.write(JSON.stringify({
-            jsonrpc: '2.0',
-            method: 'notifications/initialized',
-            params: {}
-          }) + '\n')
-        }
-      },
-      timer: setTimeout(() => {
-        console.error('[garmin] Init timeout')
-        pendingRequests.delete(msg.id)
-      }, 15000)
-    })
-    return
-  }
-
-  if (res) {
-    const timer = setTimeout(() => {
-      if (pendingRequests.has(msg.id)) {
-        pendingRequests.delete(msg.id)
-        res.status(504).json({ error: 'Garmin request timed out' })
-      }
-    }, 30000)
-    pendingRequests.set(msg.id, { res, timer })
-  }
-}
-
-// Start Garmin process
-startGarmin()
+const { createGarminRuntime } = require('./garmin-runtime')
+const garminRuntime = createGarminRuntime()
+garminRuntime.start()
 
 // ── OAuth token store (persisted to disk) ─────────────────────────────────────
 const TOKENS_FILE = '/root/.garminconnect/oauth-tokens.json'
@@ -272,12 +159,11 @@ const authenticate = (req, res, next) => {
 }
 
 // ── Health check ──────────────────────────────────────────────────────────────
-app.get('/health', (req, res) => res.json({ status: 'ok', garminReady: initialized }))
+app.get('/health', (req, res) => res.json({ status: 'ok', garminReady: garminRuntime.isReady() }))
 
 // ── MCP endpoint ──────────────────────────────────────────────────────────────
 app.post('/mcp', authenticate, (req, res) => {
   const msg = req.body
-  console.log('[mcp] Received:', JSON.stringify(msg).slice(0, 200))
 
   // Handle initialize directly so Claude.ai gets a valid 200 even if the
   // subprocess is still starting up.
@@ -293,7 +179,7 @@ app.post('/mcp', authenticate, (req, res) => {
     })
   }
 
-  if (!initialized) {
+  if (!garminRuntime.isReady()) {
     return res.status(503).json({
       jsonrpc: '2.0',
       error: { code: -32000, message: 'Garmin MCP not ready yet, try again in a moment' },
@@ -303,12 +189,12 @@ app.post('/mcp', authenticate, (req, res) => {
 
   // Notifications have no id — forward and return 202 immediately
   if (msg.id === undefined || msg.id === null) {
-    garminProcess.stdin.write(JSON.stringify(msg) + '\n')
+    garminRuntime.send(msg)
     return res.status(202).end()
   }
 
   // Regular request — forward and wait for response
-  sendToGarmin(msg, res)
+  garminRuntime.send(msg, res)
 })
 
 // Handle MCP GET (for SSE or protocol discovery)
@@ -316,7 +202,13 @@ app.get('/mcp', authenticate, (req, res) => {
   res.status(405).json({ error: 'Use POST for MCP requests' })
 })
 
-app.listen(8101, () => {
+const httpServer = app.listen(8101, () => {
   console.log('[server] Listening on port 8101')
   console.log(`[server] Base URL: ${BASE_URL}`)
+})
+
+process.once('SIGTERM', () => {
+  garminRuntime.stop()
+  httpServer.close(() => process.exit(0))
+  setTimeout(() => process.exit(0), 10000).unref()
 })

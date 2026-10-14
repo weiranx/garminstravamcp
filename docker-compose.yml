@@ -11,9 +11,16 @@ services:
       - /var/run/docker.sock:/var/run/docker.sock
 
   garmin-mcp:
-    build: .
+    build:
+      context: .
+      dockerfile: Dockerfile.garmin
     container_name: garmin-mcp
     restart: unless-stopped
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"
     labels:
       - autoheal=true
     ports:
