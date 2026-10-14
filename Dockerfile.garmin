@@ -1,0 +1,17 @@
+# NOT REPRODUCIBLE from a fresh clone: this builds on a local image of the
+# previously running Garmin container and copies in .garmin-runtime/ (gitignored,
+# a ~190 MB pinned venv + CPython that exists only on the production server).
+# The current image is kept as garmin-mcp-garmin-mcp:pinned-20261014 there.
+# For a fresh deploy, use the original Dockerfile until this is made reproducible.
+# Retain the exact working application and dependencies; no network install.
+FROM garmin-mcp-garmin-mcp:pre-cleanup-20261012
+COPY .garmin-runtime/python/ /opt/garmin-python/
+COPY .garmin-runtime/env/ /opt/garmin-runtime/
+RUN ln -sfn /opt/garmin-python/bin/python3.12 /opt/garmin-runtime/bin/python \
+    && ln -sfn python /opt/garmin-runtime/bin/python3 \
+    && ln -sfn python /opt/garmin-runtime/bin/python3.12 \
+    && sed -i 's|/root/.local/share/uv/python/cpython-3.12.13-linux-x86_64-gnu|/opt/garmin-python|g' /opt/garmin-runtime/pyvenv.cfg \
+    && /opt/garmin-runtime/bin/python -c "import garmin_mcp, garminconnect; print('Pinned Garmin runtime imports verified')"
+COPY server.js garmin-runtime.js /app/
+ENV PYTHONDONTWRITEBYTECODE=1
+CMD ["node", "server.js"]

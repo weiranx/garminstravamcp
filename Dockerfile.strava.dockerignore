@@ -1,0 +1,7 @@
+**
+!package.json
+!package-lock.json
+!strava-mcp-pkg/package.json
+!strava-mcp-pkg/package-lock.json
+!strava-server.js
+!strava-auth-helper.js

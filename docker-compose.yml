@@ -11,13 +11,20 @@ services:
       - /var/run/docker.sock:/var/run/docker.sock
 
   garmin-mcp:
-    build: .
+    build:
+      context: .
+      dockerfile: Dockerfile.garmin
     container_name: garmin-mcp
     restart: unless-stopped
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"
     labels:
       - autoheal=true
     ports:
-      - "8101:8101"
+      - "127.0.0.1:8101:8101"
     environment:
       - CLIENT_ID=${CLIENT_ID}
       - CLIENT_SECRET=${CLIENT_SECRET}
@@ -33,14 +40,16 @@ services:
       start_period: 10s
 
   strava-mcp:
-    build: .
+    build:
+      context: .
+      dockerfile: Dockerfile.strava
     command: ["node", "strava-server.js"]
     container_name: strava-mcp
     restart: unless-stopped
     labels:
       - autoheal=true
     ports:
-      - "8102:8102"
+      - "127.0.0.1:8102:8102"
     environment:
       - CLIENT_ID=${STRAVA_MCP_CLIENT_ID}
       - CLIENT_SECRET=${STRAVA_MCP_CLIENT_SECRET}
@@ -60,14 +69,16 @@ services:
       start_period: 15s
 
   coros-mcp:
-    build: .
+    build:
+      context: .
+      dockerfile: Dockerfile.coros
     command: ["node", "coros-server.js"]
     container_name: coros-mcp
     restart: unless-stopped
     labels:
       - autoheal=true
     ports:
-      - "8103:8103"
+      - "127.0.0.1:8103:8103"
     environment:
       - CLIENT_ID=${COROS_MCP_CLIENT_ID}
       - CLIENT_SECRET=${COROS_MCP_CLIENT_SECRET}

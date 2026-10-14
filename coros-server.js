@@ -31,14 +31,13 @@ if (!COROS_EMAIL || !COROS_PASSWORD) {
 let corosProcess = null
 let pendingRequests = new Map() // id -> { res, timer }
 let initialized = false
+let restartDelayMs = 3000
+const MAX_RESTART_DELAY_MS = 300000
 
 function startCoros() {
   console.log('[coros] Starting COROS MCP process...')
-  corosProcess = spawn('uvx', [
-    '--python', '3.12',
-    '--from', 'git+https://github.com/cygnusb/coros-mcp',
-    'coros-mcp', 'serve'
-  ], {
+  // Installed at image build time (Dockerfile.coros), on PATH via /opt/coros-mcp/bin
+  corosProcess = spawn('coros-mcp', ['serve'], {
     env: {
       ...process.env,
       HOME: '/root',
@@ -71,28 +70,97 @@ function startCoros() {
     }
   })
 
-  corosProcess.on('exit', (code) => {
-    console.error(`[coros] Process exited with code ${code}, restarting in 3s...`)
-    initialized = false
-    corosProcess = null
-    setTimeout(startCoros, 3000)
+  // EPIPE if the child dies mid-write; without a handler it would crash the wrapper
+  corosProcess.stdin.on('error', (e) => {
+    console.error('[coros] stdin error:', e.message)
   })
 
-  setTimeout(() => {
-    sendToCoros({
-      jsonrpc: '2.0',
-      method: 'initialize',
-      params: {
-        protocolVersion: '2024-11-05',
-        capabilities: {},
-        clientInfo: { name: 'coros-mcp-server', version: '1.0' }
-      },
-      id: 'init'
-    }, null, true)
-  }, 2000)
+  corosProcess.on('exit', (code, signal) => {
+    const delay = restartDelayMs
+    console.error(`[coros] Process exited with code ${code}${signal ? ` (${signal})` : ''}, restarting in ${delay / 1000}s...`)
+    initialized = false
+    corosProcess = null
+    restartDelayMs = Math.min(restartDelayMs * 2, MAX_RESTART_DELAY_MS)
+    setTimeout(startCoros, delay)
+  })
+
+  initCoros(corosProcess)
 }
 
-function sendToCoros(msg, res, isInternal = false) {
+// Internal MCP handshake with a freshly spawned child. It is sent right away:
+// the pipe buffers stdin until the child starts reading, so no fixed delay is
+// needed. A slow child only gets a warning and a late response still marks
+// the wrapper ready. A child that never answers is killed, and the exit
+// handler restarts it with backoff, so the wrapper cannot stay not-ready forever.
+const INIT_WARN_MS = 30000
+const INIT_GIVE_UP_MS = 300000
+let initCount = 0
+
+function initCoros(child) {
+  const msg = {
+    jsonrpc: '2.0',
+    method: 'initialize',
+    params: {
+      protocolVersion: '2024-11-05',
+      capabilities: {},
+      clientInfo: { name: 'coros-mcp-server', version: '1.0' }
+    },
+    id: `init-${++initCount}`
+  }
+  const startedAt = Date.now()
+  const elapsed = () => `${((Date.now() - startedAt) / 1000).toFixed(1)}s`
+
+  const warnTimer = setTimeout(() => {
+    console.error(`[coros] Init slow: no response after ${elapsed()}, still waiting`)
+  }, INIT_WARN_MS)
+
+  const giveUpTimer = setTimeout(() => {
+    pendingRequests.delete(msg.id)
+    console.error(`[coros] Init timeout after ${elapsed()}, killing child to restart it`)
+    killChild(child)
+  }, INIT_GIVE_UP_MS)
+
+  pendingRequests.set(msg.id, {
+    res: {
+      json: (data) => {
+        clearTimeout(warnTimer)
+        if (child !== corosProcess) return
+        if (data.error) {
+          console.error(`[coros] Init failed after ${elapsed()}:`, JSON.stringify(data.error).slice(0, 200))
+          killChild(child)
+          return
+        }
+        console.log(`[coros] Initialized after ${elapsed()}:`, JSON.stringify(data).slice(0, 200))
+        initialized = true
+        restartDelayMs = 3000
+        child.stdin.write(JSON.stringify({
+          jsonrpc: '2.0',
+          method: 'notifications/initialized',
+          params: {}
+        }) + '\n')
+      }
+    },
+    timer: giveUpTimer
+  })
+
+  child.once('exit', () => {
+    clearTimeout(warnTimer)
+    clearTimeout(giveUpTimer)
+    pendingRequests.delete(msg.id)
+  })
+
+  console.log('[coros] -->', JSON.stringify(msg).slice(0, 200))
+  child.stdin.write(JSON.stringify(msg) + '\n')
+}
+
+function killChild(child) {
+  child.kill('SIGTERM')
+  setTimeout(() => {
+    if (child.exitCode === null && child.signalCode === null) child.kill('SIGKILL')
+  }, 5000)
+}
+
+function sendToCoros(msg, res) {
   if (!corosProcess) {
     if (res) res.status(503).json({ error: 'COROS process not running' })
     return
@@ -101,27 +169,6 @@ function sendToCoros(msg, res, isInternal = false) {
   const line = JSON.stringify(msg) + '\n'
   console.log('[coros] -->', JSON.stringify(msg).slice(0, 200))
   corosProcess.stdin.write(line)
-
-  if (isInternal) {
-    pendingRequests.set(msg.id, {
-      res: {
-        json: (data) => {
-          console.log('[coros] Initialized:', JSON.stringify(data).slice(0, 200))
-          initialized = true
-          corosProcess.stdin.write(JSON.stringify({
-            jsonrpc: '2.0',
-            method: 'notifications/initialized',
-            params: {}
-          }) + '\n')
-        }
-      },
-      timer: setTimeout(() => {
-        console.error('[coros] Init timeout')
-        pendingRequests.delete(msg.id)
-      }, 15000)
-    })
-    return
-  }
 
   if (res) {
     const timer = setTimeout(() => {
@@ -178,7 +225,17 @@ app.get('/.well-known/oauth-authorization-server', (req, res) => {
     token_endpoint: `${BASE_URL}/oauth/token`,
     response_types_supported: ['code'],
     grant_types_supported: ['authorization_code', 'client_credentials'],
-    code_challenge_methods_supported: ['S256']
+    token_endpoint_auth_methods_supported: ['client_secret_post', 'none'],
+    code_challenge_methods_supported: ['S256'],
+    authorization_response_iss_parameter_supported: true
+  })
+})
+
+app.get('/.well-known/oauth-protected-resource', (req, res) => {
+  res.json({
+    resource: `${BASE_URL}/`,
+    authorization_servers: [BASE_URL],
+    bearer_methods_supported: ['header']
   })
 })
 
@@ -225,6 +282,7 @@ app.post('/authorize', (req, res) => {
 
   const url = new URL(redirect_uri)
   url.searchParams.set('code', code)
+  url.searchParams.set('iss', BASE_URL)
   if (state) url.searchParams.set('state', state)
   res.redirect(url.toString())
 })
