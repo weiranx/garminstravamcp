@@ -74,6 +74,9 @@ MCP_AUTH_TOKEN=secret MCP_PORT=8790 gpx-stitch       # streamable HTTP on :8790/
 
 ## Notes and limits
 
+- Each input must contain one non-empty track segment or route. Multiple segments/tracks
+  or route-only files with multiple routes are rejected. Split them into separate GPX
+  files, load each, and review their joins with `stitch_tracks`.
 - URL loading blocks private/loopback/link-local addresses (including the droplet metadata
   service), caps files at 25 MB, and only accepts responses that are actually GPX. Pages that
   need a login (Peakbagger, AllTrails) should be downloaded by hand into `/srv/gpx/inbox`.
@@ -88,3 +91,7 @@ MCP_AUTH_TOKEN=secret MCP_PORT=8790 gpx-stitch       # streamable HTTP on :8790/
 ```bash
 pip install -e '.[test]' && pytest -q
 ```
+
+From the repository root, run `npm install && npm test` for OAuth callback, PKCE,
+and concurrent JSON-RPC proxy regressions. These use local HTTP listeners and fake
+subprocess streams; they do not contact upstream services or read saved tokens.

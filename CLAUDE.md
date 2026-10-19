@@ -50,6 +50,12 @@ COROS also requires `COROS_EMAIL`, `COROS_PASSWORD`, and `COROS_REGION` (`eu`, `
 
 gpx-mcp optionally takes `ORS_API_KEY` (trail routing for gaps) and `ELEVATION_PROVIDER` / `OPENTOPODATA_URL` / `OPENTOPODATA_DATASET`.
 
+gpx-mcp requires `GPX_OAUTH_REDIRECT_URIS` for browser OAuth: a comma-separated exact
+callback allowlist supplied by the client. Empty disables authorization-code login.
+It is behind the `gpx` Compose profile; target `gpx-mcp` explicitly or set
+`COMPOSE_PROFILES=gpx` for routine unqualified builds/starts. Multi-segment GPX inputs
+are rejected; split and load pieces separately, then review joins with `stitch_tracks`.
+
 `docker-compose.yml` remaps these into the container's `CLIENT_ID`/`CLIENT_SECRET`/`BASE_URL` env vars, which is what both server files read.
 
 ## Common operations

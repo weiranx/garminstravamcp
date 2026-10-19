@@ -141,6 +141,7 @@ fi
 if [ "$NEW_GPX" = true ]; then
   echo "  -- gpx-stitch --"
   ask "Domain (e.g. gpx.yourdomain.com)" GPX_HOST
+  ask "Allowed OAuth callback URLs (comma-separated, exact URLs from your client; blank disables browser login)" GPX_OAUTH_REDIRECT_URIS
   echo "  Optional: an OpenRouteService API key routes gaps between tracks on trails"
   echo "  (free at https://openrouteservice.org). Leave blank to bridge gaps with straight lines."
   ask "ORS API key (optional)" ORS_API_KEY
@@ -151,6 +152,7 @@ if [ "$NEW_GPX" = true ]; then
 GPX_MCP_CLIENT_ID=${GPX_MCP_CLIENT_ID}
 GPX_MCP_CLIENT_SECRET=${GPX_MCP_CLIENT_SECRET}
 GPX_BASE_URL=https://${GPX_HOST}
+GPX_OAUTH_REDIRECT_URIS=${GPX_OAUTH_REDIRECT_URIS}
 ORS_API_KEY=${ORS_API_KEY}
 "
   # Shared folder: inbox/ for manual downloads, out/ for exports read by garmin-mcp

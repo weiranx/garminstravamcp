@@ -15,17 +15,20 @@ from .geo import Track
 
 def parse_gpx(text: str, name: str | None = None) -> Track:
     g = gpxpy.parse(text)
+    # Track operations model a continuous course. Flattening segments invents
+    # edges that were never recorded, so require the user to review joins first.
+    pieces = [seg.points for trk in g.tracks for seg in trk.segments if seg.points]
+    if not pieces:  # route-only files (CalTopo/Gaia exports sometimes)
+        pieces = [rte.points for rte in g.routes if rte.points]
+    if len(pieces) > 1:
+        raise ValueError(
+            f"GPX has {len(pieces)} non-empty segments/routes; split them into separate GPX files, "
+            "load each with load_track, then use stitch_tracks to review and bridge the joins"
+        )
     lat, lon, ele = [], [], []
-    for trk in g.tracks:
-        for seg in trk.segments:
-            for p in seg.points:
-                lat.append(p.latitude); lon.append(p.longitude)
-                ele.append(np.nan if p.elevation is None else p.elevation)
-    if not lat:  # route-only files (CalTopo/Gaia exports sometimes)
-        for rte in g.routes:
-            for p in rte.points:
-                lat.append(p.latitude); lon.append(p.longitude)
-                ele.append(np.nan if p.elevation is None else p.elevation)
+    for p in pieces[0] if pieces else []:
+        lat.append(p.latitude); lon.append(p.longitude)
+        ele.append(np.nan if p.elevation is None else p.elevation)
     if len(lat) < 2:
         raise ValueError("GPX has fewer than 2 track/route points (waypoint-only files aren't supported)")
     if not name:

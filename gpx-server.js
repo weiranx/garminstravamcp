@@ -12,6 +12,15 @@ app.use(express.json())
 const CLIENT_ID = process.env.CLIENT_ID
 const CLIENT_SECRET = process.env.CLIENT_SECRET
 const BASE_URL = process.env.BASE_URL
+// No implicit callbacks: authorization-code flows require an operator-supplied list.
+const REDIRECT_URIS = new Set((process.env.GPX_OAUTH_REDIRECT_URIS || '')
+  .split(',').map(uri => uri.trim()).filter(Boolean))
+
+for (const uri of REDIRECT_URIS) {
+  const url = new URL(uri)
+  if (!['https:', 'http:'].includes(url.protocol) || url.hash || url.username || url.password)
+    throw new Error('GPX_OAUTH_REDIRECT_URIS must contain absolute HTTP(S) callback URLs without fragments or credentials')
+}
 
 if (!CLIENT_ID || !CLIENT_SECRET || !BASE_URL) {
   console.error('ERROR: CLIENT_ID, CLIENT_SECRET, and BASE_URL must be set')
@@ -24,7 +33,7 @@ const REQUEST_TIMEOUT_MS = parseInt(process.env.GPX_REQUEST_TIMEOUT_MS || '18000
 
 // ── gpx-stitch MCP process manager ────────────────────────────────────────────
 let gpxProcess = null
-let pendingRequests = new Map() // id -> { res, timer }
+let pendingRequests = new Map() // proxy id -> { res, timer, originalId }
 let initialized = false
 
 function startGpx() {
@@ -53,10 +62,10 @@ function startGpx() {
       console.log('[gpx] <--', JSON.stringify(msg).slice(0, 200))
 
       if (msg.id !== undefined && pendingRequests.has(msg.id)) {
-        const { res, timer } = pendingRequests.get(msg.id)
+        const { res, timer, originalId } = pendingRequests.get(msg.id)
         pendingRequests.delete(msg.id)
         clearTimeout(timer)
-        res.json(msg)
+        res.json({ ...msg, id: originalId })
       }
     } catch (e) {
       console.error('[gpx] Failed to parse:', line)
@@ -90,12 +99,14 @@ function sendToGpx(msg, res, isInternal = false) {
     return
   }
 
-  const line = JSON.stringify(msg) + '\n'
-  console.log('[gpx] -->', JSON.stringify(msg).slice(0, 200))
-  gpxProcess.stdin.write(line)
+  // Client IDs are scoped to each HTTP caller. Never use them in the shared
+  // subprocess namespace (including the proxy's own initialize request).
+  const proxyId = crypto.randomUUID()
+  const forwarded = { ...msg, id: proxyId }
 
   if (isInternal) {
-    pendingRequests.set(msg.id, {
+    pendingRequests.set(proxyId, {
+      originalId: msg.id,
       res: {
         json: (data) => {
           console.log('[gpx] Initialized:', JSON.stringify(data).slice(0, 200))
@@ -109,21 +120,21 @@ function sendToGpx(msg, res, isInternal = false) {
       },
       timer: setTimeout(() => {
         console.error('[gpx] Init timeout')
-        pendingRequests.delete(msg.id)
+        pendingRequests.delete(proxyId)
       }, 15000)
     })
-    return
-  }
-
-  if (res) {
+  } else if (res) {
     const timer = setTimeout(() => {
-      if (pendingRequests.has(msg.id)) {
-        pendingRequests.delete(msg.id)
+      if (pendingRequests.has(proxyId)) {
+        pendingRequests.delete(proxyId)
         res.status(504).json({ error: 'gpx-stitch request timed out' })
       }
     }, REQUEST_TIMEOUT_MS)
-    pendingRequests.set(msg.id, { res, timer })
+    pendingRequests.set(proxyId, { res, timer, originalId: msg.id })
   }
+  // Register before writing, so even an immediate response can be matched.
+  console.log('[gpx] -->', JSON.stringify(forwarded).slice(0, 200))
+  gpxProcess.stdin.write(JSON.stringify(forwarded) + '\n')
 }
 
 // Start gpx-stitch process
@@ -158,8 +169,35 @@ loadTokens()
 const base64url = (buf) => buf.toString('base64').replace(/\+/g, '-').replace(/\//g, '_').replace(/=/g, '')
 
 const verifyPKCE = (verifier, challenge) => {
+  if (typeof verifier !== 'string' || !/^[A-Za-z0-9._~-]{43,128}$/.test(verifier)) return false
   const hash = crypto.createHash('sha256').update(verifier).digest()
   return base64url(hash) === challenge
+}
+
+const escapeHtml = value => String(value || '').replace(/[&<>"']/g,
+  ch => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' })[ch])
+
+function validateAuthorization(params, res) {
+  if (params.client_id !== CLIENT_ID) {
+    res.status(401).send('Invalid client_id')
+    return false
+  }
+  if (typeof params.redirect_uri !== 'string' || !REDIRECT_URIS.has(params.redirect_uri)) {
+    res.status(400).send('Invalid redirect_uri')
+    return false
+  }
+  if (params.code_challenge || params.code_challenge_method) {
+    if (params.code_challenge_method !== 'S256' || typeof params.code_challenge !== 'string' ||
+        !/^[A-Za-z0-9_-]{43}$/.test(params.code_challenge)) {
+      res.status(400).send('Invalid PKCE challenge; use S256')
+      return false
+    }
+  }
+  if (params.state !== undefined && typeof params.state !== 'string') {
+    res.status(400).send('Invalid state')
+    return false
+  }
+  return true
 }
 
 // ── OAuth Discovery ───────────────────────────────────────────────────────────
@@ -178,7 +216,7 @@ app.get('/.well-known/oauth-authorization-server', (req, res) => {
 app.get('/authorize', (req, res) => {
   const { response_type, client_id, redirect_uri, code_challenge, code_challenge_method, state } = req.query
   if (response_type !== 'code') return res.status(400).send('Unsupported response_type')
-  if (client_id !== CLIENT_ID) return res.status(401).send('Invalid client_id')
+  if (!validateAuthorization(req.query, res)) return
 
   res.send(`
     <!DOCTYPE html><html><head><title>Authorize gpx-stitch MCP</title>
@@ -190,11 +228,11 @@ app.get('/authorize', (req, res) => {
     <h2>Authorize gpx-stitch MCP</h2>
     <p>Claude is requesting access to build and export GPX courses.</p>
     <form method="POST" action="/authorize">
-      <input type="hidden" name="client_id" value="${client_id}"/>
-      <input type="hidden" name="redirect_uri" value="${redirect_uri}"/>
-      <input type="hidden" name="code_challenge" value="${code_challenge || ''}"/>
-      <input type="hidden" name="code_challenge_method" value="${code_challenge_method || ''}"/>
-      <input type="hidden" name="state" value="${state || ''}"/>
+      <input type="hidden" name="client_id" value="${escapeHtml(client_id)}"/>
+      <input type="hidden" name="redirect_uri" value="${escapeHtml(redirect_uri)}"/>
+      <input type="hidden" name="code_challenge" value="${escapeHtml(code_challenge)}"/>
+      <input type="hidden" name="code_challenge_method" value="${escapeHtml(code_challenge_method)}"/>
+      <input type="hidden" name="state" value="${escapeHtml(state)}"/>
       <button type="submit" name="action" value="approve" class="btn approve">Approve</button>
       <button type="submit" name="action" value="deny" class="btn deny">Deny</button>
     </form></body></html>
@@ -203,15 +241,14 @@ app.get('/authorize', (req, res) => {
 
 // ── Authorize POST ────────────────────────────────────────────────────────────
 app.post('/authorize', (req, res) => {
-  const { action, client_id, redirect_uri, code_challenge, code_challenge_method, state } = req.body
+  const { action, redirect_uri, code_challenge, state } = req.body
+  if (!validateAuthorization(req.body, res)) return
   if (action !== 'approve') {
     const url = new URL(redirect_uri)
     url.searchParams.set('error', 'access_denied')
     if (state) url.searchParams.set('state', state)
     return res.redirect(url.toString())
   }
-  if (client_id !== CLIENT_ID) return res.status(401).send('Invalid client_id')
-
   const code = base64url(crypto.randomBytes(32))
   authCodes.set(code, { redirectUri: redirect_uri, codeChallenge: code_challenge, expiresAt: Date.now() + 600000 })
 
@@ -239,7 +276,7 @@ app.post('/oauth/token', (req, res) => {
     const stored = authCodes.get(code)
     if (!stored || Date.now() > stored.expiresAt) return res.status(400).json({ error: 'invalid_grant' })
     if (stored.redirectUri !== redirect_uri) return res.status(400).json({ error: 'invalid_grant' })
-    if (stored.codeChallenge && code_verifier && !verifyPKCE(code_verifier, stored.codeChallenge))
+    if (stored.codeChallenge && !verifyPKCE(code_verifier, stored.codeChallenge))
       return res.status(400).json({ error: 'invalid_grant', error_description: 'PKCE failed' })
     authCodes.delete(code)
     const token = base64url(crypto.randomBytes(32))

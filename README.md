@@ -323,12 +323,28 @@ the Garmin MCP. Output is in miles and feet. Source and tests live in [`gpx-stit
 
 ```bash
 sudo mkdir -p /srv/gpx/inbox /srv/gpx/out
-# add GPX_MCP_CLIENT_ID / GPX_MCP_CLIENT_SECRET / GPX_BASE_URL (and optionally ORS_API_KEY) to .env
+# add GPX_MCP_CLIENT_ID / GPX_MCP_CLIENT_SECRET / GPX_BASE_URL to .env
+# add GPX_OAUTH_REDIRECT_URIS with the exact callback URLs supplied by your OAuth client
+# optionally add ORS_API_KEY
 docker compose build gpx-mcp garmin-mcp
 docker compose up -d gpx-mcp garmin-mcp   # garmin-mcp picks up the shared /srv/gpx mount
 sudo certbot certonly --standalone -d gpx.yourdomain.com   # stop nginx first, as in step 9
 ./setup-nginx.sh
 ```
+
+`gpx-mcp` uses the opt-in `gpx` Compose profile. Explicitly targeting `gpx-mcp` as above
+starts it; an unqualified `docker compose up -d` leaves it disabled. To include it in
+routine unqualified builds and starts, set `COMPOSE_PROFILES=gpx` in `.env` (append `gpx`
+to an existing comma-separated profile list).
+
+`GPX_OAUTH_REDIRECT_URIS` is a comma-separated allowlist of exact, absolute HTTP(S)
+callback URLs without fragments or URL credentials. Both authorization approval and
+denial validate this list. Empty disables authorization-code login while leaving client
+credentials available. PKCE supports S256 only, and a challenged code requires its verifier.
+
+Files with multiple non-empty track segments, tracks, or routes are rejected to avoid
+inventing straight-line connections. Split each piece into its own GPX file, load each,
+and use `stitch_tracks` to review the joins and choose how to bridge them.
 
 **Shared folder:** `/srv/gpx` on the host is mounted at the same path in `gpx-mcp` and
 `garmin-mcp`. `export_gpx` writes to `/srv/gpx/out/<name>.gpx`, and that path can be passed
