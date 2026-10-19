@@ -20,14 +20,18 @@ RUN npx --yes @r-huijts/strava-mcp-server --help 2>/dev/null || true
 # Pre-cache COROS MCP
 RUN uvx --python 3.12 --from git+https://github.com/cygnusb/coros-mcp coros-mcp --help 2>/dev/null || true
 
+# gpx-stitch (GPX course builder) — local Python package, run by gpx-server.js
+COPY gpx-stitch /opt/gpx-stitch
+RUN uv tool install --python 3.12 /opt/gpx-stitch
+
 WORKDIR /app
 
-COPY server.js strava-server.js coros-server.js strava-auth-helper.js package.json ./
+COPY server.js strava-server.js coros-server.js gpx-server.js strava-auth-helper.js package.json ./
 RUN npm install
 
 VOLUME ["/root/.garminconnect"]
 VOLUME ["/root/.config/strava-mcp"]
 
-EXPOSE 8101 8102
+EXPOSE 8101 8102 8103 8104
 
 CMD ["node", "server.js"]

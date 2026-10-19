@@ -42,31 +42,35 @@ append_env() { printf '%s\n' "$1" >> .env; }
 
 # Detect what's already configured. Already-configured services are left alone;
 # new services go through the full setup pipeline (build, auth, SSL, nginx).
-HAVE_GARMIN=false; HAVE_STRAVA=false; HAVE_COROS=false
+HAVE_GARMIN=false; HAVE_STRAVA=false; HAVE_COROS=false; HAVE_GPX=false
 has_key CLIENT_ID            && has_key BASE_URL            && HAVE_GARMIN=true
 has_key STRAVA_MCP_CLIENT_ID && has_key STRAVA_BASE_URL     && HAVE_STRAVA=true
 has_key COROS_MCP_CLIENT_ID  && has_key COROS_BASE_URL      && HAVE_COROS=true
+has_key GPX_MCP_CLIENT_ID    && has_key GPX_BASE_URL        && HAVE_GPX=true
 
 echo "  Already configured:"
 [ "$HAVE_GARMIN" = true ] && echo "    - Garmin"
 [ "$HAVE_STRAVA" = true ] && echo "    - Strava"
 [ "$HAVE_COROS"  = true ] && echo "    - COROS"
-[ "$HAVE_GARMIN" = false ] && [ "$HAVE_STRAVA" = false ] && [ "$HAVE_COROS" = false ] && echo "    (none)"
+[ "$HAVE_GPX"    = true ] && echo "    - gpx-stitch"
+[ "$HAVE_GARMIN" = false ] && [ "$HAVE_STRAVA" = false ] && [ "$HAVE_COROS" = false ] && [ "$HAVE_GPX" = false ] && echo "    (none)"
 echo ""
 echo "  Which additional services would you like to add?"
 echo ""
 
-NEW_GARMIN=false; NEW_STRAVA=false; NEW_COROS=false
+NEW_GARMIN=false; NEW_STRAVA=false; NEW_COROS=false; NEW_GPX=false
 [ "$HAVE_GARMIN" = false ] && confirm "Add Garmin MCP  (port 8101)" && NEW_GARMIN=true
 [ "$HAVE_STRAVA" = false ] && confirm "Add Strava MCP  (port 8102)" && NEW_STRAVA=true
 [ "$HAVE_COROS"  = false ] && confirm "Add COROS MCP   (port 8103)" && NEW_COROS=true
+[ "$HAVE_GPX"    = false ] && confirm "Add gpx-stitch  (port 8104, GPX course builder)" && NEW_GPX=true
 
 # Enabled = configured (already) OR being added (new). Used for summary/DNS.
 ENABLE_GARMIN=$([ "$HAVE_GARMIN" = true ] || [ "$NEW_GARMIN" = true ] && echo true || echo false)
 ENABLE_STRAVA=$([ "$HAVE_STRAVA" = true ] || [ "$NEW_STRAVA" = true ] && echo true || echo false)
 ENABLE_COROS=$([ "$HAVE_COROS"  = true ] || [ "$NEW_COROS"  = true ] && echo true || echo false)
+ENABLE_GPX=$([ "$HAVE_GPX"    = true ] || [ "$NEW_GPX"    = true ] && echo true || echo false)
 
-if [ "$NEW_GARMIN" = false ] && [ "$NEW_STRAVA" = false ] && [ "$NEW_COROS" = false ]; then
+if [ "$NEW_GARMIN" = false ] && [ "$NEW_STRAVA" = false ] && [ "$NEW_COROS" = false ] && [ "$NEW_GPX" = false ]; then
   echo ""
   echo "Nothing to add. Exiting."
   exit 0
@@ -134,6 +138,26 @@ COROS_REGION=${COROS_REGION}
   echo ""
 fi
 
+if [ "$NEW_GPX" = true ]; then
+  echo "  -- gpx-stitch --"
+  ask "Domain (e.g. gpx.yourdomain.com)" GPX_HOST
+  echo "  Optional: an OpenRouteService API key routes gaps between tracks on trails"
+  echo "  (free at https://openrouteservice.org). Leave blank to bridge gaps with straight lines."
+  ask "ORS API key (optional)" ORS_API_KEY
+  GPX_MCP_CLIENT_ID=$(gen)
+  GPX_MCP_CLIENT_SECRET=$(gen)
+  append_env "
+# ── gpx-stitch MCP ────────────────────────────────────────────────────────────
+GPX_MCP_CLIENT_ID=${GPX_MCP_CLIENT_ID}
+GPX_MCP_CLIENT_SECRET=${GPX_MCP_CLIENT_SECRET}
+GPX_BASE_URL=https://${GPX_HOST}
+ORS_API_KEY=${ORS_API_KEY}
+"
+  # Shared folder: inbox/ for manual downloads, out/ for exports read by garmin-mcp
+  sudo mkdir -p /srv/gpx/inbox /srv/gpx/out
+  echo ""
+fi
+
 source .env
 
 # ── Step 4: DNS reminder ──────────────────────────────────────────────────────
@@ -146,6 +170,7 @@ echo ""
 [ "$NEW_GARMIN" = true ] && echo "    ${BASE_URL#https://}"
 [ "$NEW_STRAVA" = true ] && echo "    ${STRAVA_BASE_URL#https://}"
 [ "$NEW_COROS"  = true ] && echo "    ${COROS_BASE_URL#https://}"
+[ "$NEW_GPX"    = true ] && echo "    ${GPX_BASE_URL#https://}"
 echo ""
 confirm "DNS records are set and propagated — continue?" || { echo "  Re-run setup.sh once DNS is ready."; exit 0; }
 
@@ -158,6 +183,7 @@ BUILD_SERVICES=""
 [ "$NEW_GARMIN" = true ] && BUILD_SERVICES="$BUILD_SERVICES garmin-mcp"
 [ "$NEW_STRAVA" = true ] && BUILD_SERVICES="$BUILD_SERVICES strava-mcp"
 [ "$NEW_COROS"  = true ] && BUILD_SERVICES="$BUILD_SERVICES coros-mcp"
+[ "$NEW_GPX"    = true ] && BUILD_SERVICES="$BUILD_SERVICES gpx-mcp"
 docker compose build $BUILD_SERVICES
 
 # ── Step 6: One-time authentication ──────────────────────────────────────────
@@ -199,6 +225,7 @@ SERVICES="autoheal"
 [ "$NEW_GARMIN" = true ] && SERVICES="$SERVICES garmin-mcp"
 [ "$NEW_STRAVA" = true ] && SERVICES="$SERVICES strava-mcp"
 [ "$NEW_COROS"  = true ] && SERVICES="$SERVICES coros-mcp"
+[ "$NEW_GPX"    = true ] && SERVICES="$SERVICES gpx-mcp"
 
 docker compose up -d $SERVICES
 
@@ -218,6 +245,7 @@ check_health() {
 [ "$NEW_GARMIN" = true ] && check_health "Garmin" "http://localhost:8101/health" "garminReady"
 [ "$NEW_STRAVA" = true ] && check_health "Strava" "http://localhost:8102/health" "stravaReady"
 [ "$NEW_COROS"  = true ] && check_health "COROS"  "http://localhost:8103/health" "corosReady"
+[ "$NEW_GPX"    = true ] && check_health "GPX"    "http://localhost:8104/health" "gpxReady"
 
 # ── Step 8: SSL certificates ──────────────────────────────────────────────────
 
@@ -231,6 +259,7 @@ if confirm "Issue SSL certificates with certbot now?"; then
   [ "$NEW_GARMIN" = true ] && sudo certbot certonly --standalone -d "${BASE_URL#https://}"
   [ "$NEW_STRAVA" = true ] && sudo certbot certonly --standalone -d "${STRAVA_BASE_URL#https://}"
   [ "$NEW_COROS"  = true ] && sudo certbot certonly --standalone -d "${COROS_BASE_URL#https://}"
+  [ "$NEW_GPX"    = true ] && sudo certbot certonly --standalone -d "${GPX_BASE_URL#https://}"
 
   sudo systemctl start nginx
   echo ""
@@ -250,6 +279,7 @@ if confirm "Configure nginx now?"; then
   export GARMIN_DOMAIN="${BASE_URL#https://}"
   export STRAVA_DOMAIN="${STRAVA_BASE_URL#https://}"
   export COROS_DOMAIN="${COROS_BASE_URL#https://}"
+  export GPX_DOMAIN="${GPX_BASE_URL#https://}"
 
   if [ "$NEW_GARMIN" = true ]; then
     envsubst '${GARMIN_DOMAIN}' < nginx-garmin.conf | sudo tee /etc/nginx/sites-available/garmin-mcp > /dev/null
@@ -265,6 +295,11 @@ if confirm "Configure nginx now?"; then
     envsubst '${COROS_DOMAIN}' < nginx-coros.conf | sudo tee /etc/nginx/sites-available/coros-mcp > /dev/null
     sudo ln -sf /etc/nginx/sites-available/coros-mcp /etc/nginx/sites-enabled/coros-mcp
     echo "  COROS:  configured ($COROS_DOMAIN)"
+  fi
+  if [ "$NEW_GPX" = true ]; then
+    envsubst '${GPX_DOMAIN}' < nginx-gpx.conf | sudo tee /etc/nginx/sites-available/gpx-mcp > /dev/null
+    sudo ln -sf /etc/nginx/sites-available/gpx-mcp /etc/nginx/sites-enabled/gpx-mcp
+    echo "  GPX:    configured ($GPX_DOMAIN)"
   fi
 
   sudo nginx -t && sudo systemctl reload nginx
@@ -297,5 +332,12 @@ if [ "$ENABLE_COROS" = true ]; then
   echo "    URL:    ${COROS_BASE_URL}/mcp"
   echo "    ID:     ${COROS_MCP_CLIENT_ID}"
   echo "    Secret: ${COROS_MCP_CLIENT_SECRET}"
+  echo ""
+fi
+if [ "$ENABLE_GPX" = true ]; then
+  echo "  gpx-stitch"
+  echo "    URL:    ${GPX_BASE_URL}/mcp"
+  echo "    ID:     ${GPX_MCP_CLIENT_ID}"
+  echo "    Secret: ${GPX_MCP_CLIENT_SECRET}"
   echo ""
 fi
