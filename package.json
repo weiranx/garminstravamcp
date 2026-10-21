@@ -4,6 +4,7 @@
   "description": "OAuth proxy for Garmin MCP server",
   "main": "oauth-proxy.js",
   "scripts": {
+    "test": "node --test tests/*.test.js",
     "start": "node oauth-proxy.js"
   },
   "dependencies": {

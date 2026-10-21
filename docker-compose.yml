@@ -25,6 +25,8 @@ services:
     volumes:
       # Persist Garmin OAuth tokens across container restarts
       - garmin-tokens:/root/.garminconnect
+      # Shared with gpx-mcp so upload_course can read courses exported by gpx-stitch
+      - /srv/gpx:/srv/gpx
     healthcheck:
       test: ["CMD", "curl", "-f", "http://localhost:8101/health"]
       interval: 30s
@@ -85,7 +87,39 @@ services:
       retries: 3
       start_period: 15s
 
+  gpx-mcp:
+    profiles: [gpx]
+    build: .
+    command: ["node", "gpx-server.js"]
+    container_name: gpx-mcp
+    restart: unless-stopped
+    labels:
+      - autoheal=true
+    ports:
+      - "8104:8104"
+    environment:
+      - CLIENT_ID=${GPX_MCP_CLIENT_ID}
+      - CLIENT_SECRET=${GPX_MCP_CLIENT_SECRET}
+      - BASE_URL=${GPX_BASE_URL}
+      - GPX_OAUTH_REDIRECT_URIS=${GPX_OAUTH_REDIRECT_URIS:-}
+      - ORS_API_KEY=${ORS_API_KEY:-}
+      - ELEVATION_PROVIDER=${ELEVATION_PROVIDER:-opentopodata}
+      - OPENTOPODATA_URL=${OPENTOPODATA_URL:-https://api.opentopodata.org}
+      - OPENTOPODATA_DATASET=${OPENTOPODATA_DATASET:-ned10m}
+    volumes:
+      # Persist working tracks and MCP OAuth tokens across container restarts
+      - gpx-stitch:/root/.config/gpx-stitch
+      # inbox/ for manual GPX downloads, out/ for exported courses (also mounted in garmin-mcp)
+      - /srv/gpx:/srv/gpx
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8104/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 15s
+
 volumes:
   garmin-tokens:
   strava-tokens:
   coros-tokens:
+  gpx-stitch:

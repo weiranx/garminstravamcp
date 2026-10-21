@@ -12,9 +12,10 @@ Hosts Garmin and Strava MCP servers as remote HTTP servers with OAuth 2.0 authen
 claude.ai → nginx (garmin.yourdomain.com:443) → server.js (8101) → garmin_mcp subprocess (uvx, stdio)
 claude.ai → nginx (strava.yourdomain.com:443) → strava-server.js (8102) → strava-mcp subprocess (npx, stdio)
 claude.ai → nginx (coros.yourdomain.com:443) → coros-server.js (8103) → coros-mcp subprocess (uvx, stdio)
+claude.ai → nginx (gpx.yourdomain.com:443) → gpx-server.js (8104) → gpx-stitch subprocess (local Python package, stdio)
 ```
 
-**Three independent Node.js servers**, each following the same pattern:
+**Four independent Node.js servers**, each following the same pattern:
 1. Spawns the upstream MCP tool as a child process communicating over stdio (line-delimited JSON-RPC)
 2. Implements OAuth 2.0 (authorization code + PKCE, and client credentials) so claude.ai can authenticate
 3. Proxies authenticated POST `/mcp` requests to the child process and returns its response
@@ -26,10 +27,13 @@ claude.ai → nginx (coros.yourdomain.com:443) → coros-server.js (8103) → co
 
 **Strava-specific**: `strava-server.js` also manages Strava API token refresh — it calls the Strava OAuth endpoint to refresh the access token before starting the child process and every 5.5 hours (Strava tokens expire after 6 hours). The Strava config is stored at `/root/.config/strava-mcp/config.json` in the container.
 
-**Three separate Docker volumes** keep the credential stores separate:
+**gpx-stitch-specific**: unlike the others, the MCP server is in this repo (`gpx-stitch/`, Python, MCP SDK 2.x). The Dockerfile installs it with `uv tool install`, and `gpx-server.js` spawns `gpx-stitch --stdio`. Tool calls get a 180 s timeout (`GPX_REQUEST_TIMEOUT_MS`) instead of 30 s because DEM elevation lookups are rate-limited. Host folder `/srv/gpx` is bind-mounted at the same path into both `gpx-mcp` and `garmin-mcp`, so a path returned by `export_gpx` works as `gpx_path` for Garmin's `upload_course`. In gpx-stitch, expected failures must raise `ToolError` (the tool wrapper converts ValueError/RuntimeError/OSError); MCP 2.x hides the message of any other exception from the client. Tests: `cd gpx-stitch && pip install -e '.[test]' && pytest -q`.
+
+**Four separate Docker volumes** keep the credential stores separate:
 - `garmin-tokens` → `/root/.garminconnect` (Garmin session tokens + MCP OAuth tokens)
 - `strava-tokens` → `/root/.config/strava-mcp` (Strava API tokens + MCP OAuth tokens)
 - `coros-tokens` → `/root/.config/coros-mcp` (COROS auth token + MCP OAuth tokens)
+- `gpx-stitch` → `/root/.config/gpx-stitch` (working tracks + MCP OAuth tokens)
 
 ## Environment variables
 
@@ -40,8 +44,17 @@ The `.env.example` file documents all required variables. The `strava-mcp` conta
 | garmin-mcp | `CLIENT_ID` | `CLIENT_SECRET` | `BASE_URL` |
 | strava-mcp | `STRAVA_MCP_CLIENT_ID` | `STRAVA_MCP_CLIENT_SECRET` | `STRAVA_BASE_URL` |
 | coros-mcp | `COROS_MCP_CLIENT_ID` | `COROS_MCP_CLIENT_SECRET` | `COROS_BASE_URL` |
+| gpx-mcp | `GPX_MCP_CLIENT_ID` | `GPX_MCP_CLIENT_SECRET` | `GPX_BASE_URL` |
 
 COROS also requires `COROS_EMAIL`, `COROS_PASSWORD`, and `COROS_REGION` (`eu`, `us`, or `asia`).
+
+gpx-mcp optionally takes `ORS_API_KEY` (trail routing for gaps) and `ELEVATION_PROVIDER` / `OPENTOPODATA_URL` / `OPENTOPODATA_DATASET`.
+
+gpx-mcp requires `GPX_OAUTH_REDIRECT_URIS` for browser OAuth: a comma-separated exact
+callback allowlist supplied by the client. Empty disables authorization-code login.
+It is behind the `gpx` Compose profile; target `gpx-mcp` explicitly or set
+`COMPOSE_PROFILES=gpx` for routine unqualified builds/starts. Multi-segment GPX inputs
+are rejected; split and load pieces separately, then review joins with `stitch_tracks`.
 
 `docker-compose.yml` remaps these into the container's `CLIENT_ID`/`CLIENT_SECRET`/`BASE_URL` env vars, which is what both server files read.
 
@@ -57,6 +70,7 @@ docker compose logs -f
 curl http://localhost:8101/health   # {"status":"ok","garminReady":true}
 curl http://localhost:8102/health   # {"status":"ok","stravaReady":true}
 curl http://localhost:8103/health   # {"status":"ok","corosReady":true}
+curl http://localhost:8104/health   # {"status":"ok","gpxReady":true}
 
 # Re-authenticate Garmin (session tokens expired)
 ./auth.sh && docker compose restart garmin-mcp
@@ -78,4 +92,4 @@ docker logs strava-mcp 2>&1 | grep "persisted token"
 
 ## nginx
 
-Two template files (`nginx-garmin.conf`, `nginx-strava.conf`) use `${GARMIN_DOMAIN}` and `${STRAVA_DOMAIN}` placeholders. `setup-nginx.sh` runs `envsubst` on them using values from `.env`, writes configs to `/etc/nginx/sites-available/`, and reloads nginx. nginx handles SSL termination; the Node servers run on plain HTTP internally.
+Template files (`nginx-garmin.conf`, `nginx-strava.conf`, `nginx-coros.conf`, `nginx-gpx.conf`) use `${GARMIN_DOMAIN}`, `${STRAVA_DOMAIN}`, `${COROS_DOMAIN}` and `${GPX_DOMAIN}` placeholders; the gpx one is only installed when `GPX_BASE_URL` is set, and raises the `/mcp` read timeout to 300 s. `setup-nginx.sh` runs `envsubst` on them using values from `.env`, writes configs to `/etc/nginx/sites-available/`, and reloads nginx. nginx handles SSL termination; the Node servers run on plain HTTP internally.

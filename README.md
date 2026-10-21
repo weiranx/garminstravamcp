@@ -8,6 +8,7 @@ Hosts [Garmin MCP](https://github.com/Taxuspt/garmin_mcp), [Strava MCP](https://
 claude.ai → nginx (garmin.yourdomain.com:443) → server.js (8101)        → garmin_mcp (stdio)
 claude.ai → nginx (strava.yourdomain.com:443) → strava-server.js (8102) → strava-mcp (stdio)
 claude.ai → nginx (coros.yourdomain.com:443)  → coros-server.js (8103)  → coros-mcp  (stdio)
+claude.ai → nginx (gpx.yourdomain.com:443)    → gpx-server.js (8104)    → gpx-stitch (stdio)
 ```
 
 - **server.js** — OAuth 2.0 proxy for Garmin MCP (authorization code + PKCE, client credentials)
@@ -17,6 +18,7 @@ claude.ai → nginx (coros.yourdomain.com:443)  → coros-server.js (8103)  → 
 - **garmin_mcp** — spawned as a child process via `uvx`
 - **strava-mcp** — spawned as a child process via `npx`, tokens refreshed every 6 hours
 - **coros-mcp** — spawned as a child process via `uvx`; authenticates with the COROS API automatically on first use and re-authenticates when the token expires
+- **gpx-server.js** / **gpx-stitch** — optional GPX course builder (Python package in [`gpx-stitch/`](gpx-stitch/)); stitches existing tracks into one course and hands it to Garmin's `upload_course`. See [gpx-stitch](#gpx-stitch-gpx-course-builder)
 
 ## Port Allocation
 
@@ -25,6 +27,7 @@ claude.ai → nginx (coros.yourdomain.com:443)  → coros-server.js (8103)  → 
 | 8101 | server.js — Garmin (internal) |
 | 8102 | strava-server.js — Strava (internal) |
 | 8103 | coros-server.js — COROS (internal) |
+| 8104 | gpx-server.js — gpx-stitch (internal, optional) |
 | 443  | nginx (public HTTPS) |
 
 ## Prerequisites
@@ -75,6 +78,7 @@ You need one subdomain per service you plan to enable. Create **A records** in y
 | A | `garmin` | `<your VPS IP>` | 300 |
 | A | `strava` | `<your VPS IP>` | 300 |
 | A | `coros`  | `<your VPS IP>` | 300 |
+| A | `gpx`    | `<your VPS IP>` | 300 |
 
 This makes `garmin.yourdomain.com`, `strava.yourdomain.com`, and `coros.yourdomain.com` resolve to your VPS.
 
@@ -206,6 +210,9 @@ curl http://localhost:8102/health
 
 curl http://localhost:8103/health
 # {"status":"ok","corosReady":true}
+
+curl http://localhost:8104/health
+# {"status":"ok","gpxReady":true}
 ```
 
 The `*Ready` flag for each enabled service must be `true` before proceeding.
@@ -244,7 +251,7 @@ chmod +x setup-nginx.sh
 ./setup-nginx.sh
 ```
 
-This runs `envsubst` on `nginx-garmin.conf`, `nginx-strava.conf`, and `nginx-coros.conf`, copies them to `/etc/nginx/sites-available/`, enables them, and reloads nginx.
+This runs `envsubst` on `nginx-garmin.conf`, `nginx-strava.conf`, and `nginx-coros.conf` (plus `nginx-gpx.conf` when `GPX_BASE_URL` is set), copies them to `/etc/nginx/sites-available/`, enables them, and reloads nginx.
 
 Verify nginx is working:
 ```bash
@@ -290,9 +297,72 @@ Go to **Settings → Integrations → Add custom connector** and add one entry f
 | OAuth Client ID | your `COROS_MCP_CLIENT_ID` |
 | OAuth Client Secret | your `COROS_MCP_CLIENT_SECRET` |
 
+**gpx-stitch** (optional):
+
+| Field | Value |
+|---|---|
+| Name | GPX Stitch |
+| Remote MCP server URL | `https://gpx.yourdomain.com/mcp` |
+| OAuth Client ID | your `GPX_MCP_CLIENT_ID` |
+| OAuth Client Secret | your `GPX_MCP_CLIENT_SECRET` |
+
 When connecting, a browser window will open asking you to approve access. Click **Approve**.
 
 OAuth tokens issued to claude.ai never expire and are persisted to disk, so you will not need to reconnect after restarting the containers.
+
+## gpx-stitch (GPX course builder)
+
+An optional fourth service that builds one continuous GPX course out of existing tracks (your
+Garmin courses, Peakbagger ascents, CalTopo or Gaia exports) and sends it to your watch through
+the Garmin MCP. Output is in miles and feet. Source and tests live in [`gpx-stitch/`](gpx-stitch/).
+
+**Tools:** `load_track`, `list_inbox`, `list_tracks`, `track_info`, `clip_track`, `reverse_track`,
+`stitch_tracks`, `elevate_track`, `export_gpx`, `delete_track`.
+
+**Enable it:** run `./setup.sh` and pick "Add gpx-stitch", or by hand:
+
+```bash
+sudo mkdir -p /srv/gpx/inbox /srv/gpx/out
+# add GPX_MCP_CLIENT_ID / GPX_MCP_CLIENT_SECRET / GPX_BASE_URL to .env
+# add GPX_OAUTH_REDIRECT_URIS with the exact callback URLs supplied by your OAuth client
+# optionally add ORS_API_KEY
+docker compose build gpx-mcp garmin-mcp
+docker compose up -d gpx-mcp garmin-mcp   # garmin-mcp picks up the shared /srv/gpx mount
+sudo certbot certonly --standalone -d gpx.yourdomain.com   # stop nginx first, as in step 9
+./setup-nginx.sh
+```
+
+`gpx-mcp` uses the opt-in `gpx` Compose profile. Explicitly targeting `gpx-mcp` as above
+starts it; an unqualified `docker compose up -d` leaves it disabled. To include it in
+routine unqualified builds and starts, set `COMPOSE_PROFILES=gpx` in `.env` (append `gpx`
+to an existing comma-separated profile list).
+
+`GPX_OAUTH_REDIRECT_URIS` is a comma-separated allowlist of exact, absolute HTTP(S)
+callback URLs without fragments or URL credentials. Both authorization approval and
+denial validate this list. Empty disables authorization-code login while leaving client
+credentials available. PKCE supports S256 only, and a challenged code requires its verifier.
+
+Files with multiple non-empty track segments, tracks, or routes are rejected to avoid
+inventing straight-line connections. Split each piece into its own GPX file, load each,
+and use `stitch_tracks` to review the joins and choose how to bridge them.
+
+**Shared folder:** `/srv/gpx` on the host is mounted at the same path in `gpx-mcp` and
+`garmin-mcp`. `export_gpx` writes to `/srv/gpx/out/<name>.gpx`, and that path can be passed
+straight to Garmin's `upload_course`. Drop GPX files that need a login to download (Peakbagger,
+AllTrails) into `/srv/gpx/inbox` (e.g. with `scp`) and load them from there.
+
+**Optional settings** (`.env`):
+
+| Variable | Default | Purpose |
+|---|---|---|
+| `ORS_API_KEY` | (none) | OpenRouteService key; routes gaps between tracks on trails. Without it, gaps are straight lines |
+| `ELEVATION_PROVIDER` | `opentopodata` | `opentopodata` (batched, USGS 3DEP 10 m) or `usgs` (EPQS, 1 point per request) |
+| `OPENTOPODATA_URL` | `https://api.opentopodata.org` | Point at a self-hosted OpenTopoData for heavy use |
+| `OPENTOPODATA_DATASET` | `ned10m` | Elevation dataset |
+
+Tool calls through `gpx-server.js` time out after 180 s (`GPX_REQUEST_TIMEOUT_MS`), and the
+nginx template allows 300 s, because elevation lookups on long routes are rate-limited (~1
+request/s on the public OpenTopoData API, 100 points per request).
 
 ## Maintenance
 
@@ -346,6 +416,7 @@ docker compose logs -f
 docker compose logs -f garmin-mcp
 docker compose logs -f strava-mcp
 docker compose logs -f coros-mcp
+docker compose logs -f gpx-mcp
 ```
 
 ### Check persisted OAuth tokens
@@ -386,12 +457,15 @@ docker compose up -d
 | `server.js` | Garmin OAuth proxy + MCP process manager (port 8101) |
 | `strava-server.js` | Strava OAuth proxy + MCP process manager (port 8102) |
 | `coros-server.js` | COROS OAuth proxy + MCP process manager (port 8103) |
+| `gpx-server.js` | gpx-stitch OAuth proxy + MCP process manager (port 8104) |
+| `gpx-stitch/` | gpx-stitch Python package (MCP server, tests) |
 | `strava-auth-helper.js` | One-time Strava token exchange helper |
 | `Dockerfile` | Single container image used by all services |
 | `docker-compose.yml` | Multi-service configuration |
 | `nginx-garmin.conf` | nginx template for Garmin (uses `${GARMIN_DOMAIN}`) |
 | `nginx-strava.conf` | nginx template for Strava (uses `${STRAVA_DOMAIN}`) |
 | `nginx-coros.conf`  | nginx template for COROS (uses `${COROS_DOMAIN}`) |
+| `nginx-gpx.conf`    | nginx template for gpx-stitch (uses `${GPX_DOMAIN}`) |
 | `setup.sh` | End-to-end installer; re-run to add a service without disturbing existing ones |
 | `setup-nginx.sh` | Generates nginx configs from `.env` and reloads nginx |
 | `auth.sh` | One-time Garmin authentication script |
