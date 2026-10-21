@@ -30,6 +30,9 @@ if (!CLIENT_ID || !CLIENT_SECRET || !BASE_URL) {
 // Elevation lookups on long routes can take a while (public OpenTopoData is ~1 req/s),
 // so tool calls get a longer timeout than the other proxies.
 const REQUEST_TIMEOUT_MS = parseInt(process.env.GPX_REQUEST_TIMEOUT_MS || '180000', 10)
+// Cold starts have taken ~45s on the VPS; if init still doesn't answer, kill the child
+// so the exit handler restarts it instead of leaving the proxy stuck not-ready.
+const INIT_TIMEOUT_MS = parseInt(process.env.GPX_INIT_TIMEOUT_MS || '60000', 10)
 
 // ── gpx-stitch MCP process manager ────────────────────────────────────────────
 let gpxProcess = null
@@ -105,6 +108,7 @@ function sendToGpx(msg, res, isInternal = false) {
   const forwarded = { ...msg, id: proxyId }
 
   if (isInternal) {
+    const proc = gpxProcess
     pendingRequests.set(proxyId, {
       originalId: msg.id,
       res: {
@@ -119,9 +123,10 @@ function sendToGpx(msg, res, isInternal = false) {
         }
       },
       timer: setTimeout(() => {
-        console.error('[gpx] Init timeout')
+        console.error(`[gpx] Init timeout after ${INIT_TIMEOUT_MS / 1000}s, killing process to restart`)
         pendingRequests.delete(proxyId)
-      }, 15000)
+        if (gpxProcess === proc) proc.kill('SIGTERM')
+      }, INIT_TIMEOUT_MS)
     })
   } else if (res) {
     const timer = setTimeout(() => {
@@ -299,7 +304,9 @@ const authenticate = (req, res, next) => {
 }
 
 // ── Health check ──────────────────────────────────────────────────────────────
-app.get('/health', (req, res) => res.json({ status: 'ok', gpxReady: initialized }))
+// 503 until gpx-stitch has initialized, so the Docker healthcheck (and autoheal) see a stuck child
+app.get('/health', (req, res) =>
+  res.status(initialized ? 200 : 503).json({ status: initialized ? 'ok' : 'starting', gpxReady: initialized }))
 
 // ── MCP endpoint ──────────────────────────────────────────────────────────────
 app.post('/mcp', authenticate, (req, res) => {
